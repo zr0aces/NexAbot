@@ -10,11 +10,16 @@ import {
 import { createReadStream, createWriteStream } from "node:fs";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import sharp from "sharp";
 import { env } from "../shared/config";
 import { Fault } from "../shared/model";
+
+const runFile = promisify(execFile);
+
 export const dirs = [env.STAGING_PATH, env.THUMBNAIL_PATH];
 export const initDirs = () =>
   Promise.all(dirs.map((d) => mkdir(d, { recursive: true, mode: 0o700 })));
@@ -29,8 +34,13 @@ export async function free() {
   const s = await statfs(dirs[0]);
   return s.bavail * s.bsize;
 }
-export const pressured = async () =>
-  (await free()) < (env.MIN_FREE_MB + env.MAX_IMAGE_SIZE_MB) * 1048576;
+export const pressured = async (reserveVideo = false) =>
+  (await free()) <
+  (env.MIN_FREE_MB +
+    (reserveVideo
+      ? Math.max(env.MAX_IMAGE_SIZE_MB, env.MAX_VIDEO_SIZE_MB)
+      : env.MAX_IMAGE_SIZE_MB)) *
+    1048576;
 export async function usage(d: string) {
   let bytes = 0;
   for (const f of await readdir(d)) {
@@ -64,15 +74,93 @@ export async function inspect(path: string) {
     mimeType: mime,
     width: m.width,
     height: m.height,
+    durationMs: null as number | null,
     fileSize: (await stat(path)).size,
     sha256: await digest(path),
   };
 }
-export async function thumbnail(id: string, size: 320 | 640) {
-  const target = pathFor(id, size),
-    tmp = target + "." + randomUUID() + ".part";
+export async function inspectVideo(path: string) {
+  let out: string;
   try {
-    await sharp(pathFor(id), { limitInputPixels: 100000000 })
+    ({ stdout: out } = await runFile(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height:format=format_name,duration",
+        "-of",
+        "json",
+        path,
+      ],
+      { timeout: 30000 },
+    ));
+  } catch {
+    throw new Fault("UNSUPPORTED_VIDEO", "Invalid or unreadable video.");
+  }
+  const parsed = JSON.parse(out) as {
+    streams?: { width?: number; height?: number }[];
+    format?: { format_name?: string; duration?: string };
+  };
+  const s = parsed.streams?.[0];
+  const fmt = parsed.format?.format_name ?? "";
+  const mime = fmt.includes("webm")
+    ? "video/webm"
+    : fmt.includes("mp4") || fmt.includes("mov") || fmt.includes("m4a")
+      ? "video/mp4"
+      : "";
+  if (!mime || !s?.width || !s?.height)
+    throw new Fault("UNSUPPORTED_VIDEO", "Unsupported video format.");
+  const durSec = Number(parsed.format?.duration ?? 0);
+  return {
+    mimeType: mime,
+    width: s.width,
+    height: s.height,
+    durationMs: Number.isFinite(durSec) && durSec > 0 ? Math.round(durSec * 1000) : null,
+    fileSize: (await stat(path)).size,
+    sha256: await digest(path),
+  };
+}
+export async function thumbnail(
+  id: string,
+  size: 320 | 640,
+  mediaType: "IMAGE" | "VIDEO" = "IMAGE",
+) {
+  const target = pathFor(id, size),
+    tmp = target + "." + randomUUID() + ".part",
+    poster = mediaType === "VIDEO" ? target + "." + randomUUID() + ".png" : null;
+  try {
+    let source = pathFor(id);
+    if (poster) {
+      try {
+        await runFile(
+          "ffmpeg",
+          [
+            "-y",
+            "-ss",
+            "00:00:01",
+            "-i",
+            source,
+            "-frames:v",
+            "1",
+            "-f",
+            "image2",
+            poster,
+          ],
+          { timeout: 30000 },
+        );
+      } catch {
+        await runFile(
+          "ffmpeg",
+          ["-y", "-i", source, "-frames:v", "1", "-f", "image2", poster],
+          { timeout: 30000 },
+        );
+      }
+      source = poster;
+    }
+    await sharp(source, { limitInputPixels: 100000000 })
       .rotate()
       .resize({
         width: size,
@@ -85,14 +173,20 @@ export async function thumbnail(id: string, size: 320 | 640) {
     await rename(tmp, target);
   } finally {
     await rm(tmp, { force: true });
+    if (poster) await rm(poster, { force: true });
   }
   return target;
 }
-export async function stage(id: string, response: Response) {
+export async function stage(
+  id: string,
+  response: Response,
+  mediaType: "IMAGE" | "VIDEO" = "IMAGE",
+) {
   if (!response.body)
     throw new Fault("LINE_DOWNLOAD", "Empty LINE response.", true);
   const path = pathFor(id),
-    tmp = path + "." + randomUUID() + ".part";
+    tmp = path + "." + randomUUID() + ".part",
+    maxMB = mediaType === "VIDEO" ? env.MAX_VIDEO_SIZE_MB : env.MAX_IMAGE_SIZE_MB;
   let n = 0;
   try {
     await pipeline(
@@ -101,8 +195,8 @@ export async function stage(id: string, response: Response) {
         transform(chunk, _, cb) {
           n += chunk.length;
           cb(
-            n > env.MAX_IMAGE_SIZE_MB * 1048576
-              ? new Fault("FILE_SIZE", "LINE image exceeds size limit.")
+            n > maxMB * 1048576
+              ? new Fault("FILE_SIZE", "LINE media exceeds size limit.")
               : null,
             chunk,
           );
@@ -110,7 +204,8 @@ export async function stage(id: string, response: Response) {
       }),
       createWriteStream(tmp, { flags: "wx", mode: 0o600 }),
     );
-    const info = await inspect(tmp);
+    const info =
+      mediaType === "VIDEO" ? await inspectVideo(tmp) : await inspect(tmp);
     await rename(tmp, path);
     return { ...info, stagingPath: path };
   } finally {

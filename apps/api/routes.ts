@@ -41,8 +41,13 @@ const audit = (action: string, targetType: string, targetId: string) =>
 async function prefs() {
   return (await db.owner.findUniqueOrThrow({ where: { id: 1 } })).settings;
 }
-async function merge(data: Record<string, string | number>) {
-  await db.$executeRaw`UPDATE "Owner" SET settings=settings || ${JSON.stringify(data)}::jsonb WHERE id=1`;
+async function merge(
+  data: Record<string, string | number | boolean | undefined>,
+) {
+  const clean = Object.fromEntries(
+    Object.entries(data).filter(([, v]) => v !== undefined),
+  );
+  await db.$executeRaw`UPDATE "Owner" SET settings=settings || ${JSON.stringify(clean)}::jsonb WHERE id=1`;
 }
 const googleStatus = () =>
   db.googleConnection.findUnique({
@@ -77,11 +82,12 @@ export function routes(
       lineConfigured: !!(c.token && c.secret),
       webhook: env.APP_URL + "/api/webhooks/line",
       maxImageMB: env.MAX_IMAGE_SIZE_MB,
+      maxVideoMB: env.MAX_VIDEO_SIZE_MB,
     };
   });
   a.patch("/settings", async (q) => {
-    await merge(limits.parse(q.body));
-    await audit("Retention updated", "owner", "1");
+    await merge(limits.partial().parse(q.body));
+    await audit("Settings updated", "owner", "1");
     return { ok: true };
   });
   a.post("/settings/line", async (q) => {
@@ -296,18 +302,53 @@ export function routes(
           : 640;
       const thumb = kind === "thumbnail";
       const path = pathFor(i.id, thumb ? size : undefined);
-      if ((thumb || i.stagingPath) && (await stat(path).catch(() => null))) {
+      const info = (thumb || i.stagingPath)
+        ? await stat(path).catch(() => null)
+        : null;
+      if (info) {
         if (thumb) await touch(path);
+        const contentType = thumb
+          ? "image/webp"
+          : (i.mimeType ?? "application/octet-stream");
+        if (!thumb && i.mediaType === "VIDEO" && q.headers.range) {
+          const m = /^bytes=(\d*)-(\d*)$/.exec(q.headers.range);
+          if (m) {
+            const start = m[1] ? Number(m[1]) : 0;
+            const end = m[2]
+              ? Math.min(Number(m[2]), info.size - 1)
+              : info.size - 1;
+            if (start <= end && end < info.size) {
+              return r
+                .code(206)
+                .header("Accept-Ranges", "bytes")
+                .header(
+                  "Content-Range",
+                  `bytes ${start}-${end}/${info.size}`,
+                )
+                .header("Content-Length", end - start + 1)
+                .type(contentType)
+                .send(createReadStream(path, { start, end }));
+            }
+          }
+        }
         return r
-          .type(
-            thumb ? "image/webp" : (i.mimeType ?? "application/octet-stream"),
-          )
+          .header("Accept-Ranges", !thumb && i.mediaType === "VIDEO" ? "bytes" : "none")
+          .header("Content-Length", info.size)
+          .type(contentType)
           .send(createReadStream(path));
       }
       if (thumb && i.stagingPath && !i.googleMediaItemId) {
         return r
           .type("image/webp")
-          .send(createReadStream(await thumbnail(i.id, size)));
+          .send(
+            createReadStream(
+              await thumbnail(
+                i.id,
+                size,
+                i.mediaType === "VIDEO" ? "VIDEO" : "IMAGE",
+              ),
+            ),
+          );
       }
       if (!i.googleMediaItemId)
         return r.code(404).send({ error: "Image not available yet." });
@@ -319,14 +360,12 @@ export function routes(
         !new URL(m.baseUrl).hostname.endsWith(".googleusercontent.com")
       )
         throw new Fault("GOOGLE_MEDIA", "Invalid remote media URL.");
-      const remote = await fetch(
-        m.baseUrl + (thumb ? "=w" + size + "-h" + size : "=d"),
-        {
-          headers: { Authorization: "Bearer " + t },
-          signal: AbortSignal.timeout(60000),
-          redirect: "error",
-        },
-      );
+      const suffix = thumb ? "=w" + size + "-h" + size : i.mediaType === "VIDEO" ? "=dv" : "=d";
+      const remote = await fetch(m.baseUrl + suffix, {
+        headers: { Authorization: "Bearer " + t },
+        signal: AbortSignal.timeout(i.mediaType === "VIDEO" && !thumb ? 300000 : 60000),
+        redirect: "error",
+      });
       if (!remote.ok || !remote.body)
         throw new Fault("GOOGLE_MEDIA", "Google media is unavailable.", true);
       const mime = (remote.headers.get("content-type") ?? "")
@@ -339,6 +378,9 @@ export function routes(
           "image/png",
           "image/gif",
           "image/avif",
+          "video/mp4",
+          "video/quicktime",
+          "video/webm",
           "application/octet-stream",
         ].includes(mime)
       ) {

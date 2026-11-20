@@ -85,18 +85,23 @@ export const media = z.object({
 export const item = async (id: string, t: string) =>
   media.parse(await api("mediaItems/" + encodeURIComponent(id), t));
 export async function bytes(path: string, mime: string, t: string) {
-  const r = await request(root + "uploads", {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer " + t,
-      "Content-type": "application/octet-stream",
-      "Content-Length": String((await stat(path)).size),
-      "X-Goog-Upload-Content-Type": mime,
-      "X-Goog-Upload-Protocol": "raw",
-    },
-    body: createReadStream(path),
-    duplex: "half",
-  } as unknown as RequestInit);
+  const r = await request(
+    root + "uploads",
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + t,
+        "Content-type": "application/octet-stream",
+        "Content-Length": String((await stat(path)).size),
+        "X-Goog-Upload-Content-Type": mime,
+        "X-Goog-Upload-Protocol": "raw",
+      },
+      body: createReadStream(path),
+      duplex: "half",
+    } as unknown as RequestInit,
+    "GOOGLE",
+    600000,
+  );
   const result = (await r.text()).trim();
   if (!result) throw new Fault("GOOGLE_UPLOAD", "Missing upload token.", true);
   return result;

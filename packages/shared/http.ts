@@ -3,13 +3,14 @@ export async function request(
   url: string,
   init: RequestInit = {},
   vendor = "GOOGLE",
+  timeoutMs = 90000,
 ) {
   let r: Response;
   try {
     r = await fetch(url, {
       redirect: "error",
       ...init,
-      signal: AbortSignal.timeout(90000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     throw new Fault("NETWORK", "Network timeout or connection failure.", true);

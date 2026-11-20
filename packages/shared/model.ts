@@ -49,6 +49,7 @@ export const limits = z.object({
   stagingHours: z.number().int().min(1).max(720),
   failedDays: z.number().int().min(1).max(90),
   thumbnailDays: z.number().int().min(1).max(365),
+  collectVideos: z.boolean().default(false),
 });
 export const filters = z.object({
   page: z.coerce.number().int().min(1).max(100000).default(1),

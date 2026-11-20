@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Image" ADD COLUMN "mediaType" TEXT NOT NULL DEFAULT 'IMAGE',
+ADD COLUMN "durationMs" INTEGER;
