@@ -1,5 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="152 40 640 640">
-  <title>NexAbot</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1940 640">
+  <title>RivoSnap</title>
+  <g transform="translate(-152 -40)">
   <g fill="none" stroke="#ff6600" stroke-linejoin="round" stroke-linecap="round">
     <path stroke-width="40" d="M452 81q20-13 40 0l201 125q21 13 21 37v239q0 23-20 36L494 637q-21 13-42 0L251 518q-21-13-21-36V243q0-25 20-38Z"/>
     <g stroke-width="36">
@@ -9,4 +10,6 @@
       <path d="m340 427 42-42 38 38 29-26 32 30" stroke-width="28"/>
     </g>
   </g>
+  </g>
+  <text x="660" y="430" fill="white" font-family="system-ui, sans-serif" font-size="288" font-weight="700">RivoSnap</text>
 </svg>

@@ -4,7 +4,7 @@
 
 ## Goal
 
-Refactor all pages in `apps/web` from the generic cream/terracotta admin template into a cohesive **Darkroom Contact Sheet & Archival Ledger** interface that aligns with NexAbot's `photo-peak.svg` emerald mark and separates **browsing memories** (Gallery, Albums, Lightbox) from **pipeline operations** (Dashboard, Upload queue, LINE groups, Settings, System health).
+Refactor all pages in `apps/web` from the generic cream/terracotta admin template into a cohesive **Darkroom Contact Sheet & Archival Ledger** interface that aligns with RivoSnap's `photo-peak.svg` emerald mark and separates **browsing memories** (Gallery, Albums, Lightbox) from **pipeline operations** (Dashboard, Upload queue, LINE groups, Settings, System health).
 
 ## Design tokens & constraints
 

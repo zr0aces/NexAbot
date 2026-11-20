@@ -1,6 +1,8 @@
-# Deploy NexAbot from GHCR
+# Deploy RivoSnap from GHCR
 
-Copy **this entire directory** from the desired release to a fresh Linux host, for example as `/opt/nexabot`. It includes a standalone `compose.yml` with release-pinned image tags and an `env.example`. No other repository files, source checkout, or build tools are needed. The host needs Docker Engine, Compose v2, and an existing HTTPS reverse proxy.
+**Upgrading an existing installation?** Before running Compose, set `COMPOSE_PROJECT_NAME` in the deployment environment to the existing project name (shown by `docker compose ls`). The new default is `rivosnap`; changing the project name selects different volumes and can start an empty database. Keep the original environment and volumes.
+
+Copy **this entire directory** from the desired release to a fresh Linux host, for example as `/opt/rivosnap`. It includes a standalone `compose.yml` with release-pinned image tags and an `env.example`. No other repository files, source checkout, or build tools are needed. The host needs Docker Engine, Compose v2, and an existing HTTPS reverse proxy.
 
 1. Confirm the publisher provides the three GHCR package names in `compose.yml` for your host architecture, using the tags shown in that file. Change the example package paths if necessary. For private packages, sign in to `ghcr.io` with a read-only package credential using `docker login --password-stdin`.
 2. From the copied directory, run `install -m 600 env.example .env` **once**, before adding secrets. Set the lowercase `GHCR_OWNER`, public HTTPS `APP_URL` (no trailing slash), and the host’s `LAN_IP`. Fill the four secret fields with independent random values. Keep the encryption key backed up separately. Configure provider credentials for the integrations you use.

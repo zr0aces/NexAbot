@@ -1,4 +1,4 @@
-name: nexabot
+name: rivosnap
 
 x-node: &node
   restart: unless-stopped

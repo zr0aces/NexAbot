@@ -1,4 +1,4 @@
-# NexAbot plan index
+# RivoSnap plan index
 
 Add a link under **Active** when a plan is created; move it to **Completed** when the work ships. Completing a plan does not bump the application version; see the [release policy](../../AGENTS.md#versioning).
 

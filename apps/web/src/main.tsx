@@ -117,8 +117,8 @@ declare const __APP_VERSION__: string;
 function Brand() {
   return (
     <div className="brand">
-      <img src="/nexabot-mark.svg" width="28" height="28" alt="" />
-      NexAbot
+      <img src="/rivosnap-mark.svg" width="28" height="28" alt="" />
+      RivoSnap
     </div>
   );
 }

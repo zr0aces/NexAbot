@@ -29,7 +29,7 @@ export async function build() {
   await app.register(swagger, {
     transform: describe,
     openapi: {
-      info: { title: "NexAbot", version: "1.0.0" },
+      info: { title: "RivoSnap", version: "1.0.0" },
       components: {
         securitySchemes: {
           session: { type: "apiKey", in: "cookie", name: "session" },

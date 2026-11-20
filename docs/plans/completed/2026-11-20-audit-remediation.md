@@ -36,8 +36,8 @@ Remediate all 13 findings (`AUD-001` through `AUD-013`) from the [2026-11-20 Ful
     - Keep request logging disabled in `apps/api/server.ts` while suppressing/replacing the deprecated `disableRequestLogging` option if Fastify 5.12 supports `loggerInstance` / `disableRequestLogging` cleanly, or verify Fastify's exact TypeScript types so zero deprecation warnings are emitted.
 12. **`AUD-012` (`WebhookEvent` pruning in `maintenance.ts`):**
     - In `apps/worker/maintenance.ts`, delete `WebhookEvent` rows where `receivedAt < new Date(now - 90 * 86400000)` to bound operational deduplication table growth while keeping 90 days of webhook history.
-13. **`AUD-013` (Unreferenced `/nexabot-mark.png` in `apps/web/index.html`):**
-    - Add `<link rel="apple-touch-icon" href="/nexabot-mark.png" />` in `apps/web/index.html` so the existing PNG asset serves as the iOS/macOS web clip icon.
+13. **`AUD-013` (Unreferenced `/rivosnap-mark.png` in `apps/web/index.html`):**
+    - Add `<link rel="apple-touch-icon" href="/rivosnap-mark.png" />` in `apps/web/index.html` so the existing PNG asset serves as the iOS/macOS web clip icon.
 
 ## Security Verification Plan
 
@@ -67,7 +67,7 @@ Remediate all 13 findings (`AUD-001` through `AUD-013`) from the [2026-11-20 Ful
 - [x] **5. Fix `AUD-010`, `AUD-012`, & `AUD-013` (React Router `useSearchParams`, `WebhookEvent` 90d pruning, and `apple-touch-icon`)** (`apps/web/src/workspace.tsx`, `apps/worker/maintenance.ts`, `apps/web/index.html`):
   - Replace `location.search === "?setup"` with `useSearchParams()` `sp.has("setup")` in `apps/web/src/workspace.tsx`.
   - Prune `WebhookEvent` rows older than 90 days in `apps/worker/maintenance.ts`.
-  - Link `/nexabot-mark.png` as `apple-touch-icon` in `apps/web/index.html`.
+  - Link `/rivosnap-mark.png` as `apple-touch-icon` in `apps/web/index.html`.
 - [x] **6. Expand tests & verify all checks (`tests/pipeline.test.ts`, `tests/model.test.ts`)**:
   - Add integration tests in `tests/pipeline.test.ts` covering `collectVideos: true` ingestion, `UNSUPPORTED_VIDEO` → `UNRECOVERABLE`, remote thumbnail caching, and local/remote video HTTP `Range` (`206 Partial Content`) playback.
   - Run `corepack pnpm typecheck`, `corepack pnpm build`, `corepack pnpm test`, `node --test scripts/version-control.test.mjs`, `node scripts/sync-version.mjs --check`, `docker compose --profile edge config --quiet`, `bash scripts/test-integration.sh`, and `rtk proxy graphify update .`.

@@ -32,7 +32,7 @@ jobs:
             echo "::error::Release tag must equal v$version"
             exit 1
           fi
-          prefix="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/nexabot"
+          prefix="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rivosnap"
           for service in api worker web; do
             image="$prefix-$service:$version"
             docker build --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \

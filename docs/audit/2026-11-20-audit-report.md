@@ -1,4 +1,4 @@
-# NexAbot Full Codebase Engineering Audit Report
+# RivoSnap Full Codebase Engineering Audit Report
 
 **Audit Date:** 2026-11-20 (Asia/Bangkok)  
 **Target Version:** `2026.11.1` (HEAD `d5566d74` with uncommitted local working tree changes)  
@@ -9,7 +9,7 @@
 ## 1. Executive Summary
 
 ### Architecture Understood
-NexAbot is a single-owner, self-hosted private photo and video archive that collects media posted to authorized LINE groups and uploads them into one app-created Google Photos album per group:
+RivoSnap is a single-owner, self-hosted private photo and video archive that collects media posted to authorized LINE groups and uploads them into one app-created Google Photos album per group:
 - **Edge & Web Tier (`Dockerfile.web`, `infra/docker/web.conf`, `apps/web`):** An unprivileged Nginx container (`nginxinc/nginx-unprivileged:stable-alpine`) serves a Vite-bundled React 19 SPA and reverse-proxies `/api/` to the Fastify API container (`api:3000`). The service binds to loopback (`127.0.0.1:${WEB_PORT:-8068}`) and a host LAN IP (`192.168.8.70:${WEB_PORT:-8068}`), behind an external TLS-terminating reverse proxy (with an optional `edge` profile for bundled Caddy).
 - **API Service (`Dockerfile.api`, `apps/api`):** A Node 24 / Fastify 5 service (`apps/api/server.ts`, `routes.ts`, `ingest.ts`, `openapi.ts`) providing Argon2id owner setup/login, Redis-backed opaque signed session cookies, CSRF origin/custom-header enforcement, raw-body HMAC-SHA256 verification for `/api/webhooks/line`, Google OAuth 2.0 flow (`photoslibrary.appendonly`, `photoslibrary.readonly.appcreateddata`), media/thumbnail streaming (with local `Range` support and remote Google Photos `baseUrl` proxy), and queue triage actions (`retry`, `discard`, `resolve-album`).
 - **Worker & Outbox Pipeline (`Dockerfile.worker`, `apps/worker`):** A Node 24 process running a 1-second polling loop (`apps/worker/main.ts`) that dispatches transactional `OutboxEvent` rows from PostgreSQL into a single-concurrency BullMQ queue (`line-images`) on Redis, updates a `worker:heartbeat` Redis key, and runs periodic retention cleanup (`apps/worker/maintenance.ts`) every 60 seconds.
@@ -236,7 +236,7 @@ NexAbot is a single-owner, self-hosted private photo and video archive that coll
   - `apps/api/server.ts:126`: `{ config: { rateLimit: { max: 8, timeWindow: "5 minutes" } } }`
   - `infra/docker/web.conf:14`: `location /api/ { proxy_pass http://$gallery_api; proxy_set_header Host $host; proxy_set_header X-Forwarded-For ""; proxy_buffering off; }`
 - **Impact:**
-  1. **Login DoS:** Because NexAbot is exposed at a public `APP_URL` (required for LINE webhooks and Google OAuth callbacks), any unauthenticated internet bot or attacker sending 8 failed requests per 5 minutes to `POST /api/v1/auth/login` will trigger HTTP `429 Too Many Requests` for **all clients globally**, locking the legitimate owner out of logging in.
+  1. **Login DoS:** Because RivoSnap is exposed at a public `APP_URL` (required for LINE webhooks and Google OAuth callbacks), any unauthenticated internet bot or attacker sending 8 failed requests per 5 minutes to `POST /api/v1/auth/login` will trigger HTTP `429 Too Many Requests` for **all clients globally**, locking the legitimate owner out of logging in.
   2. **Webhook / UI interference:** Similarly, a burst of 600 requests/minute from any external scanner against `/api/*` consumes the global 600/min bucket shared by the authenticated owner's browser and LINE webhook deliveries.
 - **How it can occur:** An external scanner or attacker sends 2 requests/minute to `POST ${APP_URL}/api/v1/auth/login` with headers `Origin: ${APP_URL}` and `X-Gallery-Request: 1`. After 8 requests within 5 minutes, the owner cannot sign in from anywhere.
 - **Recommended fix:**
@@ -323,13 +323,13 @@ NexAbot is a single-owner, self-hosted private photo and video archive that coll
 ### [AUD-013] [INFO] — Unused PNG assets in `apps/web/public/`
 
 - **Category:** Maintainability / Asset Hygiene
-- **Location:** `apps/web/public/nexabot.png`, `apps/web/public/nexabot-mark.png`
+- **Location:** `apps/web/public/rivosnap.svg`, `apps/web/public/rivosnap-mark.png`
 - **Confidence:** Confirmed
-- **Problem:** `apps/web/index.html` and `apps/web/src/main.tsx` reference only `/nexabot-mark.svg`. The raster files `apps/web/public/nexabot.png` and `apps/web/public/nexabot-mark.png` are copied into the production `dist/` bundle during `vite build` but are not referenced by `index.html`, any React component, or `README.md`.
-- **Evidence:** `apps/web/index.html:8` and `apps/web/src/main.tsx:120` only load `/nexabot-mark.svg`.
+- **Problem:** `apps/web/index.html` and `apps/web/src/main.tsx` reference only `/rivosnap-mark.svg`. The assets `apps/web/public/rivosnap.svg` and `apps/web/public/rivosnap-mark.png` are copied into the production `dist/` bundle during `vite build` but are not referenced by `index.html`, any React component, or `README.md`.
+- **Evidence:** `apps/web/index.html:8` and `apps/web/src/main.tsx:120` only load `/rivosnap-mark.svg`.
 - **Impact:** Negligible extra static files in `dist/`.
 - **How it can occur:** Build artifacts from logo creation.
-- **Recommended fix:** Either reference `nexabot-mark.png` as `<link rel="apple-touch-icon" href="/nexabot-mark.png" />` in `apps/web/index.html` or remove unused raster duplicates if not needed.
+- **Recommended fix:** Either reference `rivosnap-mark.png` as `<link rel="apple-touch-icon" href="/rivosnap-mark.png" />` in `apps/web/index.html` or remove unused raster duplicates if not needed.
 - **Expected impact:** Cleaner public asset directory or improved iOS home-screen icon support.
 
 ---
@@ -487,9 +487,9 @@ NexAbot is a single-owner, self-hosted private photo and video archive that coll
 |---|---|---|
 | `apps/web/index.html` | Reviewed | SPA HTML shell and metadata |
 | `apps/web/package.json` | Reviewed | `@gallery/web` package manifest |
-| `apps/web/public/nexabot-mark.svg` | Reviewed | Brand vector icon |
-| `apps/web/public/nexabot-mark.png` | Excluded (Binary Asset) | Binary PNG asset (`AUD-013`) |
-| `apps/web/public/nexabot.png` | Excluded (Binary Asset) | Binary PNG asset (`AUD-013`) |
+| `apps/web/public/rivosnap-mark.svg` | Reviewed | Brand vector icon |
+| `apps/web/public/rivosnap-mark.png` | Excluded (Binary Asset) | Binary PNG asset (`AUD-013`) |
+| `apps/web/public/rivosnap.svg` | Replacement asset | SVG wordmark replaced the unused PNG (`AUD-013`) |
 | `apps/web/src/data.ts` | Reviewed | Fetch wrapper, CSRF header, React Query polling (`15s`), TypeScript interfaces |
 | `apps/web/src/i18n.ts` | Reviewed | `en-GB` date formatting (`Asia/Bangkok`), byte formatting, navigation labels |
 | `apps/web/src/main.tsx` | Reviewed | Root SPA shell, sidebar health widget, login/setup form, route definitions |

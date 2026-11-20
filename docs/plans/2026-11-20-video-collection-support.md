@@ -4,11 +4,11 @@
 
 ## Goal
 
-Extend NexAbot to ingest, stage, thumbnail, upload, and privately play back `video` messages (`MP4`, `MOV`, `WebM`) from enabled LINE groups alongside images, gated by an opt-in `collectVideos` setting (default `false`), while preserving channel/message deduplication, transactional outbox, and zero silent deletion of unuploaded originals.
+Extend RivoSnap to ingest, stage, thumbnail, upload, and privately play back `video` messages (`MP4`, `MOV`, `WebM`) from enabled LINE groups alongside images, gated by an opt-in `collectVideos` setting (default `false`), while preserving channel/message deduplication, transactional outbox, and zero silent deletion of unuploaded originals.
 
 ## Key constraints & design notes
 
-- **Settings persistence**: NexAbot stores runtime preferences as JSON via `prefs()` / `merge()` in `packages/database/connections.ts`, validated by `limits` in `packages/shared/model.ts` and `settings()` in `packages/shared/config.ts` (no Prisma table for settings).
+- **Settings persistence**: RivoSnap stores runtime preferences as JSON via `prefs()` / `merge()` in `packages/database/connections.ts`, validated by `limits` in `packages/shared/model.ts` and `settings()` in `packages/shared/config.ts` (no Prisma table for settings).
 - **LINE Messaging API**: `message.type === "video"` uses `/v2/bot/message/{messageId}/content`, but files can exceed 50 MB and take longer than `request()`'s 90s timeout.
 - **Google Photos Library API**: `photoslibrary.appendonly` supports video uploads via `uploads` + `mediaItems:batchCreate`; remote playback uses `baseUrl + "=dv"` (with `60m` expiry, resolved server-side).
 - **Worker runtime**: `sharp` cannot decode video; `ffmpeg`/`ffprobe` in `Dockerfile.worker` is needed to validate video streams, extract `width`/`height`/`durationMs`, and generate `320`/`640` `.webp` poster thumbnails.

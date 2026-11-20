@@ -1,4 +1,4 @@
-# NexAbot project instructions
+# RivoSnap project instructions
 
 Keep project rules here. Claude Code imports this file through CLAUDE.md; Codex and Antigravity use it directly or through GEMINI.md. Use Node 24 and the root pnpm workspace through Corepack.
 
@@ -21,7 +21,7 @@ When creating, revising, or shipping an implementation plan, follow the [plan in
 
 - Application release policy: use root `VERSION` as the sole authority for CalVer `YYYY.M.N`, where the year and month follow Asia/Bangkok and N is the release sequence within that month. A release check must fail if the source is missing or malformed; never infer a version from a package manifest.
 - Keep check, prepare and publish separate. Check is read-only. Prepare advances the version, synchronizes owned release metadata and checks it; it does not build, install, commit, tag or push. Creating an annotated local tag or publishing requires explicit authorization.
-- Use the repository-local scripts: `node scripts/sync-version.mjs --check` validates, and `node scripts/release.mjs` prepares only. The optional `--build` runs the workspace build, not a production deployment. NexAbot’s OpenAPI version identifies the API contract; do not bump it for a calendar release.
+- Use the repository-local scripts: `node scripts/sync-version.mjs --check` validates, and `node scripts/release.mjs` prepares only. The optional `--build` runs the workspace build, not a production deployment. RivoSnap’s OpenAPI version identifies the API contract; do not bump it for a calendar release.
 
 ## graphify
 
