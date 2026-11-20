@@ -1,5 +1,7 @@
 # Compose deployment
 
+Publishing a GitHub Release tagged `v<root VERSION>` triggers the release workflow. It builds Linux/amd64 images for the API, worker, and web services and pushes them to `ghcr.io/<owner>/nexabot-{api,worker,web}:<VERSION>`. Draft releases and tag pushes alone do not publish images.
+
 To run published GHCR images on another server without a local build, see the [image deployment example](example-deploy/README.md).
 
 Use a supported Linux Docker Engine and Compose. Reserve space for database, Redis AOF, pending originals and disposable thumbnails. Restrict Docker access to trusted administrators. Keep the deployment environment and separately backed-up encryption key outside version control.
