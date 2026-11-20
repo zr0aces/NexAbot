@@ -358,9 +358,12 @@ export function Groups({ albums = false }: { albums?: boolean }) {
 export function Settings() {
   const q = query<Prefs>("/settings"),
     google = query<{ status: string; lastError?: string }>("/google/status"),
-    action = useAction();
+    action = useAction(),
+    [editingLine, setEditingLine] = useState(false);
   if (!q.data) return <p>{q.error?.message ?? "Loading settings…"}</p>;
   const d = q.data;
+  const connected = google.data?.status === "CONNECTED";
+  const showLineForm = !d.lineConfigured || editingLine;
 
   function save(e: FormEvent<HTMLFormElement>, kind: string) {
     e.preventDefault();
@@ -376,7 +379,10 @@ export function Settings() {
               Object.entries(data).map(([k, v]) => [k, Number(v)]),
             ),
       );
-      if (kind === "line") form.reset();
+      if (kind === "line") {
+        form.reset();
+        setEditingLine(false);
+      }
     });
   }
 
@@ -385,111 +391,157 @@ export function Settings() {
       <Title
         k="ADMINISTRATION"
         title="Settings"
-        sub="Manage the accounts, storage policies and webhook for this library."
+        sub="Manage your LINE source, Google Photos destination, and local cache policy."
       />
       <p role="status" aria-live="polite">
         {action.msg}
       </p>
       <div className="settingsStack">
-        <section className="panel">
-          <div className="railHead">
-            <small>1 · DESTINATION</small>
-            <span
-              className={
-                "pill " + (google.data?.status === "CONNECTED" ? "ok" : "warn")
-              }
-            >
-              {google.data?.status ?? "UNKNOWN"}
-            </span>
-          </div>
-          <h2>Google Photos</h2>
-          {google.data?.lastError && (
-            <p className="pill err">{google.data.lastError}</p>
-          )}
-          <p>
-            Sends personal images from enabled groups to your Google Photos
-            account. Reads only app-created albums and media to verify uploads
-            and display them privately.
-          </p>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <a className="button primary" href={base + "/google/connect"}>
-              Connect Google Photos
-            </a>
-            <Button
-              disabled={action.busy}
-              variant="secondary"
-              onClick={() => action.run(() => api("/google/validate", "POST"))}
-            >
-              Validate
-            </Button>
-            <Button
-              disabled={action.busy}
-              variant="ghost"
-              onClick={() => action.run(() => api("/google/disconnect", "POST"))}
-            >
-              Disconnect
-            </Button>
-          </div>
-        </section>
-
-        <form className="panel" onSubmit={(e) => save(e, "line")}>
-          <div className="railHead">
-            <small>2 · GROUP SOURCE</small>
-            <span className={"pill " + (d.lineConfigured ? "ok" : "warn")}>
-              {d.lineConfigured ? "Configured" : "Needs credentials"}
-            </span>
-          </div>
-          <h2>LINE Messaging API</h2>
-          <p>
-            {d.lineConfigured
-              ? "Credentials are stored server-side. Submit new values below to rotate."
-              : "Add the channel credentials to begin collecting from LINE groups."}
-          </p>
-          <label>
-            Access token
-            <input name="token" type="password" required autoComplete="off" />
-          </label>
-          <label>
-            Channel secret
-            <input name="secret" type="password" required autoComplete="off" />
-          </label>
-          <Button disabled={action.busy}>Save credentials</Button>
-          {d.webhook && (
-            <div style={{ marginTop: 14 }}>
-              <small>WEBHOOK URL</small>
-              <div className="codeRow">
-                <code>{d.webhook}</code>
-                <CopyButton value={d.webhook} />
-              </div>
+        <div className="settingsBridge">
+          <form className="panel" onSubmit={(e) => save(e, "line")}>
+            <div className="railHead">
+              <small>SOURCE · LINE</small>
+              <span className={"pill " + (d.lineConfigured ? "ok" : "warn")}>
+                {d.lineConfigured ? "Configured" : "Needs credentials"}
+              </span>
             </div>
-          )}
-        </form>
+            <h2>LINE Messaging API</h2>
+            {d.webhook && (
+              <div style={{ margin: "10px 0 14px" }}>
+                <small>WEBHOOK URL</small>
+                <div className="codeRow">
+                  <code>{d.webhook}</code>
+                  <CopyButton value={d.webhook} />
+                </div>
+              </div>
+            )}
+            {showLineForm ? (
+              <>
+                <label>
+                  Access token
+                  <input
+                    name="token"
+                    type="password"
+                    required
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  Channel secret
+                  <input
+                    name="secret"
+                    type="password"
+                    required
+                    autoComplete="off"
+                  />
+                </label>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Button disabled={action.busy}>Save credentials</Button>
+                  {d.lineConfigured && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={action.busy}
+                      onClick={() => setEditingLine(false)}
+                    >
+                      Cancel
+                    </Button>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <p>
+                  Channel credentials are stored server-side. Rotate them only
+                  when issuing a new token or secret.
+                </p>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setEditingLine(true)}
+                >
+                  Update credentials
+                </Button>
+              </>
+            )}
+          </form>
+
+          <section className="panel">
+            <div className="railHead">
+              <small>DESTINATION · GOOGLE</small>
+              <span className={"pill " + (connected ? "ok" : "warn")}>
+                {google.data?.status ?? "UNKNOWN"}
+              </span>
+            </div>
+            <h2>Google Photos</h2>
+            {google.data?.lastError && (
+              <p className="pill err">{google.data.lastError}</p>
+            )}
+            <p>
+              Uploads new images from enabled LINE groups into app-created
+              albums. Scope is limited to app-created albums and media.
+            </p>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <a
+                className={"button " + (connected ? "secondary" : "primary")}
+                href={base + "/google/connect"}
+              >
+                {connected ? "Reconnect" : "Connect Google Photos"}
+              </a>
+              {connected && (
+                <Button
+                  disabled={action.busy}
+                  variant="default"
+                  onClick={() =>
+                    action.run(() => api("/google/validate", "POST"))
+                  }
+                >
+                  Validate connection
+                </Button>
+              )}
+              <Button
+                disabled={action.busy}
+                variant="ghost"
+                onClick={() =>
+                  action.run(() => api("/google/disconnect", "POST"))
+                }
+              >
+                Disconnect
+              </Button>
+            </div>
+          </section>
+        </div>
 
         <form className="panel" onSubmit={(e) => save(e, "retention")}>
-          <small>3 · LOCAL CACHE</small>
+          <small>LOCAL CACHE</small>
           <h2>Retention policy</h2>
-          {(
-            [
-              ["stagingHours", "Synced originals (hours)", 720],
-              ["failedDays", "Failed original review deadline (days)", 90],
-              ["thumbnailDays", "Thumbnail cache (days)", 365],
-            ] as const
-          ).map(([k, l, max]) => (
-            <label key={k}>
-              {l}
-              <input
-                name={k}
-                type="number"
-                min="1"
-                max={max}
-                required
-                defaultValue={d[k]}
-              />
-            </label>
-          ))}
+          <div className="retentionGrid">
+            {(
+              [
+                ["stagingHours", "Synced originals", "hours", 720],
+                ["failedDays", "Failed review deadline", "days", 90],
+                ["thumbnailDays", "Thumbnail cache", "days", 365],
+              ] as const
+            ).map(([k, l, unit, max]) => (
+              <label key={k}>
+                {l}
+                <div className="unitInput">
+                  <input
+                    name={k}
+                    type="number"
+                    min="1"
+                    max={max}
+                    required
+                    defaultValue={d[k]}
+                  />
+                  <span className="mono">{unit}</span>
+                </div>
+              </label>
+            ))}
+          </div>
           <div className="safetyNote">
-            Failed and uncertain originals are held for manual review and are
-            never silently discarded.
+            Failed and uncertain originals stay staged until you review them and
+            are never silently discarded.
           </div>
           <Button disabled={action.busy}>Save retention</Button>
         </form>
@@ -498,7 +550,10 @@ export function Settings() {
   );
 }
 
-function healthStatus(k: string, v: string | boolean): "ok" | "warn" | "err" {
+export function healthStatus(
+  k: string,
+  v: string | boolean,
+): "ok" | "warn" | "err" {
   if (k === "diskPressure") return v === false ? "ok" : "warn";
   if (v === "Online" || v === "PONG") return "ok";
   return "err";

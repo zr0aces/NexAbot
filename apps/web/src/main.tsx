@@ -12,7 +12,6 @@ import {
   Images,
   Layers,
   Users,
-  Activity,
   Settings as Gear,
   CloudUpload,
   LogOut,
@@ -22,7 +21,7 @@ import {
 } from "lucide-react";
 import { Button } from "../../../packages/ui/button";
 import { api, query, labels, type Stats } from "./data";
-import { Dashboard, Groups, Settings, Health } from "./workspace";
+import { Dashboard, Groups, Settings, Health, healthStatus } from "./workspace";
 import { Library } from "./photos";
 import "./style.css";
 
@@ -41,19 +40,82 @@ const navSections = [
       ["groups", "/groups", Users],
       ["jobs", "/jobs", CloudUpload],
       ["settings", "/settings", Gear],
-      ["health", "/health", Activity],
     ] as const,
   },
 ];
+
+const healthLabels: Record<string, string> = {
+  database: "Database",
+  redis: "Redis",
+  worker: "Worker",
+  diskPressure: "Disk",
+};
+
+function SidebarHealth({ mobile = false }: { mobile?: boolean }) {
+  const q = query<Record<string, string | boolean>>("/health");
+  const entries = Object.entries(q.data ?? {});
+  if (mobile) {
+    return (
+      <Link
+        to="/health"
+        className="mobileHealth"
+        aria-label="System health"
+        title="System health"
+      >
+        {entries.length ? (
+          entries.map(([k, v]) => (
+            <span
+              key={k}
+              className={"healthDot " + healthStatus(k, v)}
+              title={`${healthLabels[k] ?? k}: ${String(v)}`}
+            />
+          ))
+        ) : (
+          <span className={"healthDot " + (q.error ? "err" : "warn")} />
+        )}
+      </Link>
+    );
+  }
+  return (
+    <div className="sidebarHealth">
+      <div className="sidebarHealthHead">
+        <Link to="/health">System health</Link>
+        <ArrowUpRight size={13} />
+      </div>
+      {q.error ? (
+        <div className="healthMiniRow">
+          <span className="healthDot err" />
+          <span>API unreachable</span>
+        </div>
+      ) : entries.length ? (
+        entries.map(([k, v]) => {
+          const state = healthStatus(k, v);
+          const display =
+            k === "diskPressure" ? (v ? "Pressured" : "Normal") : String(v);
+          return (
+            <div className="healthMiniRow" key={k}>
+              <span className={"healthDot " + state} />
+              <span>{healthLabels[k] ?? k}</span>
+              <span className="mono">{display}</span>
+            </div>
+          );
+        })
+      ) : (
+        <div className="healthMiniRow">
+          <span className="healthDot warn" />
+          <span>Checking…</span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const client = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
 
 function Brand() {
   return (
     <div className="brand">
-      <svg viewBox="0 0 32 32" aria-hidden="true">
-        <use href="/photo-peak.svg#mark" />
-      </svg>
+      <img src="/nexabot-mark.svg" width="28" height="28" alt="" />
       NexAbot
     </div>
   );
@@ -180,6 +242,7 @@ function App() {
         <div className="asideTop">
           <Brand />
           <div className="mobileActions">
+            <SidebarHealth mobile />
             <Button
               variant="ghost"
               aria-label="Dark theme"
@@ -210,6 +273,7 @@ function App() {
           ))}
         </nav>
         <div className="asideFooter">
+          <SidebarHealth />
           <Button variant="ghost" onClick={signOut}>
             <LogOut size={16} />
             Sign out

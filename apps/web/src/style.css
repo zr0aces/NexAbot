@@ -199,18 +199,8 @@ aside {
   color: var(--ink);
 }
 
-.brand svg {
-  --peak-frame: #086440;
-  --peak-ink: #141816;
-  width: 28px;
-  height: 28px;
+.brand img {
   flex-shrink: 0;
-}
-
-:root[data-theme="dark"] .brand svg,
-.entrySide .brand svg {
-  --peak-frame: #34d399;
-  --peak-ink: #ecefea;
 }
 
 .navGroup {
@@ -775,7 +765,112 @@ code {
 .settingsStack {
   display: grid;
   gap: 16px;
-  max-width: 760px;
+  max-width: 960px;
+}
+
+.settingsBridge {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+}
+
+.settingsBridge .panel {
+  margin-bottom: 0;
+}
+
+.retentionGrid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.unitInput {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.unitInput input {
+  flex: 1;
+}
+
+.unitInput span {
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+}
+
+.sidebarHealth {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.sidebarHealthHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font: 600 0.7rem / 1.4 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-label);
+}
+
+.sidebarHealthHead a {
+  text-decoration: none;
+  color: inherit;
+}
+
+.sidebarHealthHead a:hover {
+  text-decoration: underline;
+}
+
+.healthMiniRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+}
+
+.healthMiniRow .mono {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--ink);
+}
+
+.healthDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--ink-muted);
+}
+
+.healthDot.ok {
+  background: var(--status-ok);
+}
+
+.healthDot.warn {
+  background: var(--signal-warn);
+}
+
+.healthDot.err {
+  background: var(--signal-err);
+}
+
+.mobileHealth {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  text-decoration: none;
 }
 
 .safetyNote {
