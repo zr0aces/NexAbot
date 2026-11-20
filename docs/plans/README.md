@@ -9,6 +9,7 @@ Add a link under **Active** when a plan is created; move it to **Completed** whe
 
 ## Completed
 
+- [Migrate API & Worker services to Go](completed/2026-11-21-go-backend-migration.md) — Replace Node/TypeScript API and worker runtimes with a compiled Go binary while preserving Nginx `web`, Postgres schema, encrypted tokens, and Compose contracts.
 - [Refresh LINE group name & sync Google Photos album title](completed/2026-11-20-refresh-line-group-name.md) — Manual refresh button and API endpoint to sync renamed LINE group titles and mapped Google Photos album titles.
 - [Audit Remediation (AUD-001 to AUD-013)](completed/2026-11-20-audit-remediation.md) — Fix all findings from the 2026-11-20 full codebase engineering audit.
 - [Sidebar System Health & Settings refactor](completed/2026-11-20-sidebar-health-settings-refactor.md) — Live color-dot health strip in sidebar and Pipeline Bridge Settings layout.

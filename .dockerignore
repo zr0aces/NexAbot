@@ -1,5 +1,11 @@
 **
 !VERSION
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!internal/
+!internal/**
 !scripts/
 scripts/**
 !scripts/version-control.mjs
