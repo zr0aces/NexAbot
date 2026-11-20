@@ -6,6 +6,7 @@ import { download, line } from "../../packages/line-client";
 import {
   stage,
   inspect,
+  inspectVideo,
   thumbnail,
   pathFor,
   pressured,
@@ -60,8 +61,11 @@ export async function resolveAlbum(g: LineGroup, t: string) {
   });
   return albumId;
 }
-export const filename = (i: Image) =>
-  "line-" + i.id + "." + (i.mimeType?.split("/")[1] ?? "jpg");
+export const filename = (i: Image) => {
+  const sub = i.mimeType?.split("/")[1];
+  const ext = sub === "quicktime" ? "mov" : (sub ?? (i.mediaType === "VIDEO" ? "mp4" : "jpg"));
+  return "line-" + i.id + "." + ext;
+};
 export async function processEvent(outboxId: string) {
   const evt = await db.outboxEvent.findUnique({ where: { id: outboxId } });
   if (!evt) return;
@@ -162,10 +166,16 @@ export async function processEvent(outboxId: string) {
           if (e.code === "ENOENT") return null;
           throw e;
         });
+        const mediaKind = i.mediaType === "VIDEO" ? "VIDEO" : "IMAGE";
         if (exists) {
-          staged = { ...(await inspect(path)), stagingPath: path };
+          staged = {
+            ...(mediaKind === "VIDEO"
+              ? await inspectVideo(path)
+              : await inspect(path)),
+            stagingPath: path,
+          };
         } else {
-          if (await pressured())
+          if (await pressured(mediaKind === "VIDEO"))
             throw new Fault(
               "DISK_PRESSURE",
               "Free staging disk space.",
@@ -175,6 +185,7 @@ export async function processEvent(outboxId: string) {
           staged = await stage(
             id,
             await download(i.lineMessageId, (await lineCredentials()).token),
+            mediaKind,
           );
         }
         await move("STAGED", staged);
@@ -195,8 +206,10 @@ export async function processEvent(outboxId: string) {
         i.uploadStatus === "UPLOAD_PENDING" ||
         i.uploadStatus === "UPLOADING"
       ) {
+        const mediaKind = i.mediaType === "VIDEO" ? "VIDEO" : "IMAGE";
         if (!i.thumbnailPath) {
-          for (const size of [320, 640] as const) await thumbnail(id, size);
+          for (const size of [320, 640] as const)
+            await thumbnail(id, size, mediaKind);
           i = await db.image.update({
             where: { id },
             data: { thumbnailPath: pathFor(id, 320) },
@@ -205,7 +218,10 @@ export async function processEvent(outboxId: string) {
         if (i.uploadStatus === "STAGED") await move("UPLOAD_PENDING");
         if (i.uploadStatus === "UPLOAD_PENDING") await move("UPLOADING");
         const path = pathFor(id),
-          info = await inspect(path);
+          info =
+            mediaKind === "VIDEO"
+              ? await inspectVideo(path)
+              : await inspect(path);
         if (info.sha256 !== i.sha256 || info.mimeType !== i.mimeType)
           throw new Fault(
             "INTEGRITY",

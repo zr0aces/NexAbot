@@ -15,7 +15,7 @@ A single-owner, private photo inbox for authorized personal LINE groups. New gro
 
 Start with the [plan index](docs/plans/README.md) to find or propose work. Claude Code, Codex, and Antigravity share the [AI tool workflow](AGENTS.md#ai-tool-workflow).
 
-The [versioning policy](AGENTS.md#versioning) specifies Bangkok-calendar CalVer for application releases. No release tooling is configured yet. The version in the OpenAPI document identifies the API contract, not an application release.
+The [versioning policy](AGENTS.md#versioning) specifies Bangkok-calendar CalVer for application releases. Root `VERSION` is authoritative. Validate it with `node scripts/sync-version.mjs --check`. To prepare the next version, run `node scripts/release.mjs`; this does not publish, tag or build. Use `node scripts/release.mjs --help` for explicit version, build and local tag options. The version in the OpenAPI document identifies the API contract, not an application release.
 
 Node 24 LTS and pnpm 10 via Corepack. Run from the repository root:
 

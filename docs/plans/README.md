@@ -5,6 +5,7 @@ Add a link under **Active** when a plan is created; move it to **Completed** whe
 ## Active
 
 - [Frontend design refactor](2026-11-20-frontend-design-refactor.md) — Darkroom Contact Sheet & Archival Ledger UI refactor across all `apps/web` pages.
+- [Video collection support](2026-11-20-video-collection-support.md) — Ingest, process (`ffmpeg`), upload, and play back LINE group videos.
 
 ## Completed
 

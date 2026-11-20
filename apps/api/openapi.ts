@@ -9,7 +9,7 @@ const body: Record<string, z.ZodType> = {
     bootstrap: z.string(),
   }),
   "POST /auth/login": z.object({ email: z.email(), password: z.string() }),
-  "PATCH /settings": limits,
+  "PATCH /settings": limits.partial(),
   "POST /settings/line": z.object({ token: z.string(), secret: z.string() }),
   "PATCH /groups/:id": z.object({ enabled: z.boolean() }),
   "POST /groups/:id/resolve-album": z.object({

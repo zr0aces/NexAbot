@@ -464,6 +464,29 @@ export function Settings() {
                 </Button>
               </>
             )}
+            <div className="row" style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--line)", borderBottom: 0 }}>
+              <div>
+                <b>Collect videos</b>
+                <p style={{ margin: 0, fontSize: "0.8rem" }}>
+                  Off by default. Up to {d.maxVideoMB} MB per video.
+                </p>
+              </div>
+              <Button
+                type="button"
+                disabled={action.busy}
+                variant={d.collectVideos ? "default" : "secondary"}
+                aria-pressed={d.collectVideos}
+                onClick={() =>
+                  action.run(() =>
+                    api("/settings", "PATCH", {
+                      collectVideos: !d.collectVideos,
+                    }),
+                  )
+                }
+              >
+                {d.collectVideos ? "Enabled" : "Disabled"}
+              </Button>
+            </div>
           </form>
 
           <section className="panel">

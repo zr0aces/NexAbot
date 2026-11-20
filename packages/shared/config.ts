@@ -16,6 +16,7 @@ export const env = z
     STAGING_PATH: z.string().default("/data/staging"),
     THUMBNAIL_PATH: z.string().default("/data/thumbnails"),
     MAX_IMAGE_SIZE_MB: z.coerce.number().int().min(1).max(200).default(50),
+    MAX_VIDEO_SIZE_MB: z.coerce.number().int().min(1).max(1000).default(200),
     MIN_FREE_MB: z.coerce.number().int().min(1).default(1024),
     STAGING_RETENTION_HOURS: z.coerce.number().default(24),
     FAILED_RETENTION_DAYS: z.coerce.number().default(7),
@@ -29,5 +30,6 @@ export const settings = (custom: unknown) =>
     stagingHours: env.STAGING_RETENTION_HOURS,
     failedDays: env.FAILED_RETENTION_DAYS,
     thumbnailDays: env.THUMBNAIL_RETENTION_DAYS,
+    collectVideos: false,
     ...(typeof custom === "object" ? custom : {}),
   });

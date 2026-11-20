@@ -34,6 +34,8 @@ export interface Photo {
   createdAt: string;
   lineGroupId: string;
   lineEventTimestamp: string;
+  mediaType?: "IMAGE" | "VIDEO";
+  durationMs?: number | null;
   group: { displayName: string | null };
   uploadStatus: State;
   width: number | null;
@@ -76,8 +78,10 @@ export interface Settings {
   stagingHours: number;
   failedDays: number;
   thumbnailDays: number;
+  collectVideos: boolean;
   lineConfigured: boolean;
   webhook: string;
   maxImageMB: number;
+  maxVideoMB: number;
 }
 export { date, bytes, name, labels } from "./i18n";

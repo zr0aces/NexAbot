@@ -35,15 +35,22 @@ export function relevant(e: Event) {
     !!e.source.groupId &&
     (e.type === "join" ||
       e.type === "leave" ||
-      (e.type === "message" && e.message?.type === "image"))
+      (e.type === "message" &&
+        (e.message?.type === "image" || e.message?.type === "video")))
   );
 }
-export function line(path: string, token: string, data = false) {
+export function line(
+  path: string,
+  token: string,
+  data = false,
+  timeoutMs = 90000,
+) {
   return request(
     "https://" + (data ? "api-data" : "api") + ".line.me/v2/bot/" + path,
     { headers: { Authorization: "Bearer " + token } },
     "LINE",
+    timeoutMs,
   );
 }
 export const download = (id: string, t: string) =>
-  line("message/" + encodeURIComponent(id) + "/content", t, true);
+  line("message/" + encodeURIComponent(id) + "/content", t, true, 600000);

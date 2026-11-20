@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { backoff, transition } from "../packages/shared/model";
+import { backoff, limits, transition } from "../packages/shared/model";
 import { signed, relevant } from "../packages/line-client";
 import { createHmac } from "node:crypto";
 test("signature binds exact raw bytes", () => {
@@ -26,4 +26,27 @@ test("sync needs remote ID and correct predecessor", () => {
 test("retry respects provider floor and caps exponential delay", () => {
   expect(backoff(1, 60000)).toBe(60000);
   expect(backoff(99)).toBeLessThanOrEqual(3600000);
+});
+test("group video events and collectVideos setting parse", () => {
+  expect(
+    relevant({
+      type: "message",
+      source: { type: "group", groupId: "g1" },
+      message: { type: "video", id: "1" },
+      timestamp: 1,
+      webhookEventId: "e",
+    }),
+  ).toBe(true);
+  expect(
+    relevant({
+      type: "message",
+      source: { type: "group", groupId: "g1" },
+      message: { type: "audio", id: "2" },
+      timestamp: 1,
+      webhookEventId: "e2",
+    }),
+  ).toBe(false);
+  expect(limits.partial().parse({ collectVideos: true })).toEqual({
+    collectVideos: true,
+  });
 });

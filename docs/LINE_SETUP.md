@@ -6,6 +6,6 @@
 4. In NexAbot Settings, copy the **Webhook URL** into LINE Developers. It is your public `APP_URL` followed by `/api/webhooks/line`. LINE must be able to reach it from the internet; a successful LAN check is not sufficient. Click Verify, enable Use webhook and Webhook redelivery. The empty signed verification batch is valid. Do not require proxy login or transform request bodies on this path.
 5. Explain collection to group participants. Invite the Official Account, open LINE groups, enable collection and send a new image. Check Upload queue, then Gallery.
 
-[Message content](https://developers.line.biz/en/reference/messaging-api/#get-content) expires after a provider-controlled period. Download promptly; redelivery does not restore expired content. LINE bytes may differ from camera originals. No history retrieval, direct messages, rooms or non-image collection.
+[Message content](https://developers.line.biz/en/reference/messaging-api/#get-content) expires after a provider-controlled period. Download promptly; redelivery does not restore expired content. LINE bytes may differ from camera originals. No history retrieval, direct messages or rooms. Video collection is disabled by default and can be enabled in Settings.
 
 Official references checked before implementation: [receiving messages](https://developers.line.biz/en/docs/messaging-api/receiving-messages/), [signature verification](https://developers.line.biz/en/docs/messaging-api/verify-webhook-signature/) and [group chats](https://developers.line.biz/en/docs/messaging-api/group-chats/).

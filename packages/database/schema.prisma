@@ -68,6 +68,8 @@ model Image {
   channelId          String
   lineMessageId      String
   lineEventTimestamp DateTime
+  mediaType          String          @default("IMAGE")
+  durationMs         Int?
   mimeType           String?
   fileSize           Int?
   width              Int?

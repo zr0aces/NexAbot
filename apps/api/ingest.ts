@@ -1,9 +1,15 @@
 import { db } from "../../packages/database";
 import { envelope, relevant } from "../../packages/line-client";
 import { pressured } from "../../packages/image-processing";
+import { settings } from "../../packages/shared/config";
 import { Fault } from "../../packages/shared/model";
 export async function ingest(raw: unknown) {
   const payload = envelope.parse(raw);
+  const owner = await db.owner.findUnique({
+    where: { id: 1 },
+    select: { settings: true },
+  });
+  const policy = settings(owner?.settings);
   for (const e of payload.events.filter(relevant)) {
     const id = e.source!.groupId!,
       date = new Date(e.timestamp);
@@ -57,6 +63,8 @@ export async function ingest(raw: unknown) {
         (g.enabledSince && date < g.enabledSince)
       )
         return;
+      const mediaType = e.message!.type === "video" ? "VIDEO" : "IMAGE";
+      if (mediaType === "VIDEO" && !policy.collectVideos) return;
       const imageId = crypto.randomUUID();
       const created = await tx.image.createMany({
         data: {
@@ -65,11 +73,12 @@ export async function ingest(raw: unknown) {
           lineMessageId: e.message!.id,
           channelId: payload.destination,
           lineEventTimestamp: date,
+          mediaType,
         },
         skipDuplicates: true,
       });
       if (!created.count) return;
-      if (await pressured())
+      if (await pressured(mediaType === "VIDEO"))
         throw new Fault(
           "DISK_PRESSURE",
           "Ingestion paused: staging disk reserve reached.",

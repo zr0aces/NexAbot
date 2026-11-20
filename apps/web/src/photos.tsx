@@ -29,6 +29,12 @@ function statusTone(status: string): string {
   return "";
 }
 
+function formatDuration(ms?: number | null) {
+  if (!ms || ms <= 0) return "VIDEO";
+  const sec = Math.round(ms / 1000);
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+}
+
 function Lightbox({
   items,
   index,
@@ -94,10 +100,18 @@ function Lightbox({
           </Button>
         </div>
       </div>
-      <img
-        src={base + "/images/" + p.id + "/content"}
-        alt={"Photo received " + date(p.lineEventTimestamp)}
-      />
+      {p.mediaType === "VIDEO" ? (
+        <video
+          controls
+          playsInline
+          src={base + "/images/" + p.id + "/content"}
+        />
+      ) : (
+        <img
+          src={base + "/images/" + p.id + "/content"}
+          alt={"Photo received " + date(p.lineEventTimestamp)}
+        />
+      )}
       <div className="viewerFoot">
         <p className="mono" style={{ margin: 0, fontSize: "0.78rem" }}>
           {date(p.lineEventTimestamp)} · {p.width} × {p.height} ·{" "}
@@ -345,6 +359,11 @@ export function Library({ jobs = false }: { jobs?: boolean }) {
                       src={base + "/images/" + p.id + "/thumbnail?size=640"}
                       alt={"Photo from " + groupName}
                     />
+                    {p.mediaType === "VIDEO" && (
+                      <span className="videoPip pill">
+                        ▶ {formatDuration(p.durationMs)}
+                      </span>
+                    )}
                     {p.uploadStatus !== "SYNCED" && (
                       <span
                         className={
