@@ -21,7 +21,7 @@ These commands assume the default `WEB_PORT=8068`. If you changed it in `.env`, 
 
 1. On the app host, run `docker compose ps` and `curl -fsS http://127.0.0.1:8068/api/v1/auth/status`. Expect HTTP 200 with setup and authentication flags; no credentials are needed.
 2. From the LAN proxy, run `curl -fsS http://192.168.8.70:8068/api/v1/auth/status`. If only this hop fails, check the host address, port binding, routing and firewall.
-3. From outside the LAN, run `curl -fsS https://dnbot.zerotrust.in.th/api/v1/auth/status`. If DNS fails, check the public record. A certificate error points to proxy TLS configuration; a 502 generally points to the proxy's upstream. Do not fix these by exposing the published web port publicly or disabling secure cookies.
+3. From outside the LAN, set the shell variable `APP_URL` to the deployment’s public HTTPS origin, then run `curl -fsS "${APP_URL}/api/v1/auth/status"`. If DNS fails, check the public record. A certificate error points to proxy TLS configuration; a 502 generally points to the proxy's upstream. Do not fix these by exposing the published web port publicly or disabling secure cookies.
 
 ## First live acceptance
 

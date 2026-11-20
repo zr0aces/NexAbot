@@ -1,6 +1,6 @@
 # OAuth and provider restrictions
 
-Start the connection while signed in at `https://dnbot.zerotrust.in.th`, not at the LAN IP. Google returns the browser to the [registered HTTPS callback](GOOGLE_CLOUD_SETUP.md), where NexAbot needs the original owner session cookie.
+Start the connection while signed in at the public HTTPS origin configured in `APP_URL`, not at the LAN IP. Google returns the browser to the [registered HTTPS callback](GOOGLE_CLOUD_SETUP.md), where NexAbot needs the original owner session cookie.
 
 Authorization Code Flow requests offline access and explicit consent. One-time Redis state is bound to the signed-in session and expires in ten minutes. Refresh tokens are encrypted; access tokens stay server-side. Validate lists app-created albums. Reconnection checks an existing mapped album where available. No identity scope is requested, so the optional Google account ID can remain unset.
 

@@ -6,10 +6,10 @@ A single-owner, private photo inbox for authorized personal LINE groups. New gro
 
 ## Quick start
 
-1. Install Docker with Compose. Point DNS for `dnbot.zerotrust.in.th` to your HTTPS reverse proxy and provision its TLS certificate. Use `APP_URL=https://dnbot.zerotrust.in.th` for production, including when signing in from the LAN.
+1. Install Docker with Compose. Choose a public hostname, point its DNS record to your reverse proxy, and provision a TLS certificate for it. Set `APP_URL` to that public HTTPS origin (for example, `https://gallery.example.com`), without a path or trailing slash. Use the same URL when signing in from the LAN.
 2. Copy the supplied environment template to Compose's private environment file. Set APP_URL, the matching redirect URI, OAuth credentials and a URL-safe database password. Generate **separate** values with `openssl rand -hex 32` for SESSION_SECRET, TOKEN_ENCRYPTION_KEY and BOOTSTRAP_SECRET. Restrict file permissions to the owner.
-3. Run `docker compose up -d --build`. Forward https://dnbot.zerotrust.in.th to http://127.0.0.1:8068 from a same-host proxy, or to http://192.168.8.70:8068 from a LAN proxy. The host port defaults to 8068. To change it, set `WEB_PORT` in `.env`, run `docker compose up -d --no-deps web`, and update the proxy upstream. Leave bundled Caddy disabled. See [deployment](docs/DOCKER_DEPLOYMENT.md).
-4. Open https://dnbot.zerotrust.in.th and claim the owner account. Follow the [owner setup steps](docs/OWNER_GUIDE.md#set-up-your-first-group) to save the LINE credentials **before** verifying the webhook, authorize Google Photos, and confirm your first synced image.
+3. Run `docker compose up -d --build`. Forward requests for `APP_URL` to http://127.0.0.1:8068 from a same-host proxy, or to http://192.168.8.70:8068 from a LAN proxy. The host port defaults to 8068. To change it, set `WEB_PORT` in `.env`, run `docker compose up -d --no-deps web`, and update the proxy upstream. Leave bundled Caddy disabled. See [deployment](docs/DOCKER_DEPLOYMENT.md).
+4. Open your configured `APP_URL` and claim the owner account. Follow the [owner setup steps](docs/OWNER_GUIDE.md#set-up-your-first-group) to save the LINE credentials **before** verifying the webhook, authorize Google Photos, and confirm your first synced image.
 
 ## Development and tests
 
