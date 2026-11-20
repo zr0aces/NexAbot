@@ -1,6 +1,6 @@
 name: rivosnap
 
-x-node: &node
+x-service: &service
   restart: unless-stopped
   init: true
   environment:
@@ -64,27 +64,27 @@ services:
       retries: 10
 
   api:
-    <<: *node
+    <<: *service
     image: "ghcr.io/${GHCR_OWNER:?Set GHCR_OWNER}/rivosnap-api:latest"
     container_name: rivosnap-api
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
     healthcheck:
-      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: [CMD, /app/rivosnap, healthcheck-api]
       interval: 10s
       timeout: 5s
       start_period: 60s
       retries: 6
 
   worker:
-    <<: *node
+    <<: *service
     image: "ghcr.io/${GHCR_OWNER:?Set GHCR_OWNER}/rivosnap-worker:latest"
     container_name: rivosnap-worker
     depends_on: &api_ready
       api: {condition: service_healthy}
     healthcheck:
-      test: [CMD, node, --input-type=module, -e, "import Redis from 'ioredis';const r=new Redis(process.env['REDIS_URL']);process.exit(await r.exists('worker:heartbeat')?0:1)"]
+      test: [CMD, /app/rivosnap, healthcheck-worker]
       interval: 30s
       timeout: 5s
       retries: 3

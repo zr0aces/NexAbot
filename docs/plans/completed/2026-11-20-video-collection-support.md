@@ -1,6 +1,6 @@
 # Video collection support (LINE group videos → Google Photos)
 
-**Status:** 2026-11-20 — Implemented Tasks 1–6 and doc updates (`prisma generate`, `typecheck`, `build`, `vitest` pass). Pending `prisma migrate deploy` and `bash scripts/test-integration.sh` in Task 7.
+**Status:** 2026-11-21 — Completed and verified in both the React frontend and Go backend/worker (`go test -v ./...`, `test-integration.sh`, `typecheck`, `build` pass).
 
 ## Goal
 
@@ -40,6 +40,6 @@ Extend RivoSnap to ingest, stage, thumbnail, upload, and privately play back `vi
   - Add `mediaType` and `durationMs` to `Photo` type.
   - Render a video badge/duration pill on `.photo` contact-sheet cards for videos (preserving `Photo from <group>` button accessible name).
   - Render `<video controls playsInline>` inside `Lightbox` when `p.mediaType === "VIDEO"`.
-- [ ] **7. Docs & verification**:
+- [x] **7. Docs & verification**:
   - Update `README.md`, `docs/OWNER_GUIDE.md`, `docs/LINE_SETUP.md`, and `docs/SECURITY.md` to document `collectVideos` (off by default), supported video formats, size limits, and disk impact.
-  - Add unit/integration tests for `collectVideos` gating, video ingestion, `ffprobe`/`ffmpeg` thumbnailing, and `Range` streaming; run `corepack pnpm typecheck`, `corepack pnpm build`, `corepack pnpm test`, and `bash scripts/test-integration.sh`.
+  - Add unit/integration tests for `collectVideos` gating, video ingestion, `ffprobe`/`ffmpeg` thumbnailing, and `Range` streaming; run `corepack pnpm typecheck`, `corepack pnpm build`, `go test -v ./...`, and `bash scripts/test-integration.sh`.

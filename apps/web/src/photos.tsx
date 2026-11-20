@@ -8,7 +8,6 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { Button } from "../../../packages/ui/button";
-import { states } from "../../../packages/shared/model";
 import {
   api,
   base,
@@ -16,6 +15,7 @@ import {
   date,
   name,
   query,
+  states,
   type Group,
   type Photo,
   type Settings,

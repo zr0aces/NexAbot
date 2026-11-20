@@ -4,7 +4,7 @@ ENV PNPM_HOME=/opt/pnpm PATH=/opt/pnpm:$PATH
 RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/* && corepack enable && corepack prepare pnpm@10.33.0 --activate
 WORKDIR /app
 COPY . .
-RUN pnpm install --frozen-lockfile && pnpm generate
+RUN pnpm install --frozen-lockfile
 RUN pnpm build
 FROM ${NGINX_IMAGE}
 COPY infra/docker/web.conf /etc/nginx/conf.d/default.conf

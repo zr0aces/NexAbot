@@ -17,8 +17,6 @@ Start with the [plan index](docs/plans/README.md) to find or propose work. Claud
 
 The [versioning policy](AGENTS.md#versioning) specifies Bangkok-calendar CalVer for application releases. Root `VERSION` is authoritative. Validate it with `node scripts/sync-version.mjs --check`. To prepare the next version, run `node scripts/release.mjs`; this does not publish, tag or build. Use `node scripts/release.mjs --help` for explicit version, build and local tag options. The version in the OpenAPI document identifies the API contract, not an application release.
 
-The former TypeScript API and worker are preserved in `_archive/api/` and `_archive/worker/` for compatibility testing. Neither is deployed.
-
 Go 1.26+ (for the `api` and `worker` services in `cmd/rivosnap` and `internal/*`) and Node 24 LTS + pnpm 10 via Corepack (for `apps/web`, E2E tests, and version scripts). Run from the repository root:
 
 ```sh
@@ -31,9 +29,9 @@ corepack pnpm exec playwright install --with-deps chromium
 corepack pnpm e2e
 ```
 
-Host integration tests require `ffmpeg` (with WebP support) and `ffprobe` on PATH. The integration script creates disposable PostgreSQL and Redis containers on loopback, applies migrations, and tests the authenticated webhook-to-gallery path against mocked providers. This test is skipped without the script's opt-in. Playwright runs its gallery fixture locally. To exercise owner login and worker health, set E2E_URL and E2E_SETUP_KEY for a **disposable deployment only**; the test creates a fixture owner.
+The integration script creates disposable PostgreSQL and Redis containers on loopback, applies embedded SQL migrations via `go run ./cmd/rivosnap migrate`, and tests the authenticated webhook-to-gallery path against mocked providers. This test is skipped without the script's opt-in. Playwright runs its gallery fixture locally. To exercise owner login and worker health, set E2E_URL and E2E_SETUP_KEY for a **disposable deployment only**; the test creates a fixture owner.
 
-For host development export server settings, point DATABASE_URL and REDIS_URL to dedicated instances, select writable cache directories, set NODE_ENV=development and APP_URL=http://localhost:5173. Run `go run ./cmd/rivosnap migrate`, then `go run ./cmd/rivosnap api`, `go run ./cmd/rivosnap worker`, and `corepack pnpm exec vite apps/web` in separate terminals. Use real HTTPS for live provider onboarding.
+For host development export server settings, point DATABASE_URL and REDIS_URL to dedicated instances, select writable cache directories, set NODE_ENV=development and APP_URL=http://localhost:5173. Run `corepack pnpm migrate`, then `corepack pnpm api`, `corepack pnpm worker`, and `corepack pnpm exec vite apps/web` in separate terminals. Use real HTTPS for live provider onboarding.
 
 ## Handbook
 
