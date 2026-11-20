@@ -33,9 +33,18 @@ func Connect(ctx context.Context, env config.Env) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, err
+	var pingErr error
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		pingErr = pool.Ping(ctx)
+		if pingErr == nil {
+			break
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			pool.Close()
+			return nil, pingErr
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 	return &DB{Pool: pool, Env: env}, nil
 }

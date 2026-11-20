@@ -12,6 +12,7 @@ RUN apk add --no-cache ca-certificates ffmpeg tzdata && \
     addgroup -g 1000 node && adduser -u 1000 -G node -s /bin/sh -D node
 WORKDIR /app
 COPY --from=build /out/rivosnap /app/rivosnap
+COPY packages/database/migrations /app/packages/database/migrations
 COPY VERSION /app/VERSION
 RUN ln -s /app/rivosnap /usr/local/bin/node && \
     mkdir -p /data/staging /data/thumbnails && chown -R node:node /data /app
