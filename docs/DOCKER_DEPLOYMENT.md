@@ -1,5 +1,7 @@
 # Compose deployment
 
+To run published GHCR images on another server without a local build, see the [image deployment example](example-deploy/README.md).
+
 Use a supported Linux Docker Engine and Compose. Reserve space for database, Redis AOF, pending originals and disposable thumbnails. Restrict Docker access to trusted administrators. Keep the deployment environment and separately backed-up encryption key outside version control.
 
 The `web` service in `docker-compose.yml` selects the unprivileged Nginx image and declares its published ports. Dockerfile.web builds the React assets into that image; this runs one Nginx container, not a separate static server and proxy. No override file is required. Start without the edge profile:

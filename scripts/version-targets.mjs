@@ -1,6 +1,12 @@
-// VERSION is the only application release slot. Workspace packages are private
-// and unversioned; the OpenAPI version describes the independent API contract.
+import { replaceRequired } from './version-control.mjs';
+
+// Pin deployable images from root VERSION. Leave dependency images untouched.
 export default {
-  targets: [],
+  targets: ['api', 'worker', 'web'].map(service => ({
+    path: 'docs/example-deploy/compose.yml',
+    transform: (content, version) => replaceRequired(content,
+      new RegExp(`(image: "ghcr\\.io/[^"\\n]+/nexabot-${service}:)[^"\\n]+"`),
+      (_, prefix) => prefix + version + '"'),
+  })),
   build: [{ command: 'corepack', args: ['pnpm', 'build'] }],
 };

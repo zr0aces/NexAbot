@@ -14,7 +14,7 @@ FROM base AS runtime
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/packages ./packages
 COPY --from=deps /app/apps ./apps
-COPY package.json pnpm-workspace.yaml tsconfig.json ./
+COPY VERSION package.json pnpm-workspace.yaml tsconfig.json ./
 RUN mkdir -p /data/staging /data/thumbnails && chown -R node:node /data
 USER node
 ENV NODE_ENV=production
