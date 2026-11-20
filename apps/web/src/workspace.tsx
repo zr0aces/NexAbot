@@ -48,13 +48,13 @@ export function useAction() {
   return {
     msg,
     busy,
-    run: async (f: () => Promise<unknown>) => {
+    run: async (f: () => Promise<unknown>, okMsg = "Saved.") => {
       lock(true);
       set("");
       try {
         await f();
         await qc.invalidateQueries();
-        set("Saved.");
+        set(okMsg);
       } catch (e) {
         set((e as Error).message);
       } finally {
@@ -369,45 +369,82 @@ export function Settings() {
     e.preventDefault();
     const form = e.currentTarget,
       data = Object.fromEntries(new FormData(form));
-    void action.run(async () => {
-      await api(
-        kind === "line" ? "/settings/line" : "/settings",
-        kind === "line" ? "POST" : "PATCH",
-        kind === "line"
-          ? data
-          : Object.fromEntries(
-              Object.entries(data).map(([k, v]) => [k, Number(v)]),
-            ),
-      );
-      if (kind === "line") {
-        form.reset();
-        setEditingLine(false);
-      }
-    });
+    void action.run(
+      async () => {
+        await api(
+          kind === "line" ? "/settings/line" : "/settings",
+          kind === "line" ? "POST" : "PATCH",
+          kind === "line"
+            ? data
+            : Object.fromEntries(
+                Object.entries(data).map(([k, v]) => [k, Number(v)]),
+              ),
+        );
+        if (kind === "line") {
+          form.reset();
+          setEditingLine(false);
+        }
+      },
+      kind === "line" ? "Credentials saved." : "Retention saved.",
+    );
   }
 
   return (
     <>
       <Title
-        k="ADMINISTRATION"
+        k="SETTINGS"
         title="Settings"
-        sub="Manage your LINE source, Google Photos destination, and local cache policy."
+        sub="Control where group media arrives, what gets saved, and how long copies stay local."
       />
       <p role="status" aria-live="polite">
         {action.msg}
       </p>
-      <div className="settingsStack">
-        <div className="settingsBridge">
-          <form className="panel" onSubmit={(e) => save(e, "line")}>
-            <div className="railHead">
-              <small>SOURCE · LINE</small>
-              <span className={"pill " + (d.lineConfigured ? "ok" : "warn")}>
-                {d.lineConfigured ? "Configured" : "Needs credentials"}
+      <div className="settingsLedger">
+        <div className="routeStrip" aria-label="Active media pipeline">
+          <div className="routeNode">
+            <span className={"healthDot " + (d.lineConfigured ? "ok" : "warn")} />
+            <div>
+              <b>LINE channel</b>
+              <span className="mono">
+                {d.collectVideos
+                  ? `Photos + Videos (≤${d.maxVideoMB} MB)`
+                  : `Photos only (≤${d.maxImageMB} MB)`}
               </span>
             </div>
-            <h2>LINE Messaging API</h2>
+          </div>
+          <span className="routeArrow" aria-hidden="true">
+            →
+          </span>
+          <div className="routeNode">
+            <span className="healthDot ok" />
+            <div>
+              <b>Local cache</b>
+              <span className="mono">{d.stagingHours}h staging · {d.failedDays}d review</span>
+            </div>
+          </div>
+          <span className="routeArrow" aria-hidden="true">
+            →
+          </span>
+          <div className="routeNode">
+            <span className={"healthDot " + (connected ? "ok" : "warn")} />
+            <div>
+              <b>Google Photos</b>
+              <span className="mono">{connected ? "App albums only" : "Disconnected"}</span>
+            </div>
+          </div>
+        </div>
+
+        <section className="ledgerRow">
+          <div className="ledgerAside">
+            <h2>LINE channel</h2>
+            <span className={"pill " + (d.lineConfigured ? "ok" : "warn")}>
+              {d.lineConfigured ? "Configured" : "Needs credentials"}
+            </span>
+            <p>Where group messages arrive from.</p>
+          </div>
+          <form className="ledgerMain" onSubmit={(e) => save(e, "line")}>
             {d.webhook && (
-              <div style={{ margin: "10px 0 14px" }}>
+              <div style={{ marginBottom: 14 }}>
                 <small>WEBHOOK URL</small>
                 <div className="codeRow">
                   <code>{d.webhook}</code>
@@ -450,7 +487,7 @@ export function Settings() {
                 </div>
               </>
             ) : (
-              <>
+              <div>
                 <p>
                   Channel credentials are stored server-side. Rotate them only
                   when issuing a new token or secret.
@@ -462,12 +499,21 @@ export function Settings() {
                 >
                   Update credentials
                 </Button>
-              </>
+              </div>
             )}
-            <div className="row" style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--line)", borderBottom: 0 }}>
+          </form>
+        </section>
+
+        <section className="ledgerRow">
+          <div className="ledgerAside">
+            <h2>Collection rules</h2>
+            <p>What gets captured from enabled groups.</p>
+          </div>
+          <div className="ledgerMain">
+            <div className="ruleRow">
               <div>
                 <b>Collect videos</b>
-                <p style={{ margin: 0, fontSize: "0.8rem" }}>
+                <p style={{ margin: 0, fontSize: "0.84rem" }}>
                   Off by default. Up to {d.maxVideoMB} MB per video.
                 </p>
               </div>
@@ -477,97 +523,129 @@ export function Settings() {
                 variant={d.collectVideos ? "default" : "secondary"}
                 aria-pressed={d.collectVideos}
                 onClick={() =>
-                  action.run(() =>
-                    api("/settings", "PATCH", {
-                      collectVideos: !d.collectVideos,
-                    }),
+                  action.run(
+                    () =>
+                      api("/settings", "PATCH", {
+                        collectVideos: !d.collectVideos,
+                      }),
+                    !d.collectVideos
+                      ? "Video collection enabled."
+                      : "Video collection disabled.",
                   )
                 }
               >
                 {d.collectVideos ? "Enabled" : "Disabled"}
               </Button>
             </div>
-          </form>
-
-          <section className="panel">
-            <div className="railHead">
-              <small>DESTINATION · GOOGLE</small>
-              <span className={"pill " + (connected ? "ok" : "warn")}>
-                {google.data?.status ?? "UNKNOWN"}
-              </span>
+            <div className="ruleRow" style={{ borderBottom: 0, paddingBottom: 0 }}>
+              <div>
+                <b>Collect photos</b>
+                <p style={{ margin: 0, fontSize: "0.84rem" }}>
+                  Always on for enabled groups. Up to {d.maxImageMB} MB per image.
+                </p>
+              </div>
+              <span className="pill ok">Always on</span>
             </div>
+          </div>
+        </section>
+
+        <section className="ledgerRow">
+          <div className="ledgerAside">
             <h2>Google Photos</h2>
+            <span className={"pill " + (connected ? "ok" : "warn")}>
+              {google.data?.status ?? "UNKNOWN"}
+            </span>
+            <p>Where synced albums live.</p>
+          </div>
+          <div className="ledgerMain">
             {google.data?.lastError && (
-              <p className="pill err">{google.data.lastError}</p>
+              <p className="pill err" style={{ marginBottom: 10 }}>
+                {google.data.lastError}
+              </p>
             )}
             <p>
-              Uploads new images from enabled LINE groups into app-created
+              Uploads new media from enabled LINE groups into app-created
               albums. Scope is limited to app-created albums and media.
             </p>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <a
-                className={"button " + (connected ? "secondary" : "primary")}
-                href={base + "/google/connect"}
-              >
-                {connected ? "Reconnect" : "Connect Google Photos"}
-              </a>
+            <div className="actionSplit">
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {connected && (
+                  <Button
+                    disabled={action.busy}
+                    variant="default"
+                    onClick={() =>
+                      action.run(
+                        () => api("/google/validate", "POST"),
+                        "Google connection validated.",
+                      )
+                    }
+                  >
+                    Validate connection
+                  </Button>
+                )}
+                <a
+                  className={"button " + (connected ? "secondary" : "primary")}
+                  href={base + "/google/connect"}
+                >
+                  {connected ? "Reconnect" : "Connect Google Photos"}
+                </a>
+              </div>
               {connected && (
                 <Button
                   disabled={action.busy}
-                  variant="default"
+                  variant="ghost"
+                  className="dangerGhost"
                   onClick={() =>
-                    action.run(() => api("/google/validate", "POST"))
+                    action.run(
+                      () => api("/google/disconnect", "POST"),
+                      "Google disconnected.",
+                    )
                   }
                 >
-                  Validate connection
+                  Disconnect
                 </Button>
               )}
-              <Button
-                disabled={action.busy}
-                variant="ghost"
-                onClick={() =>
-                  action.run(() => api("/google/disconnect", "POST"))
-                }
-              >
-                Disconnect
-              </Button>
             </div>
-          </section>
-        </div>
+          </div>
+        </section>
 
-        <form className="panel" onSubmit={(e) => save(e, "retention")}>
-          <small>LOCAL CACHE</small>
-          <h2>Retention policy</h2>
-          <div className="retentionGrid">
-            {(
-              [
-                ["stagingHours", "Synced originals", "hours", 720],
-                ["failedDays", "Failed review deadline", "days", 90],
-                ["thumbnailDays", "Thumbnail cache", "days", 365],
-              ] as const
-            ).map(([k, l, unit, max]) => (
-              <label key={k}>
-                {l}
-                <div className="unitInput">
-                  <input
-                    name={k}
-                    type="number"
-                    min="1"
-                    max={max}
-                    required
-                    defaultValue={d[k]}
-                  />
-                  <span className="mono">{unit}</span>
-                </div>
-              </label>
-            ))}
+        <section className="ledgerRow">
+          <div className="ledgerAside">
+            <h2>Local retention</h2>
+            <p>How long files stay on this server.</p>
           </div>
-          <div className="safetyNote">
-            Failed and uncertain originals stay staged until you review them and
-            are never silently discarded.
-          </div>
-          <Button disabled={action.busy}>Save retention</Button>
-        </form>
+          <form className="ledgerMain" onSubmit={(e) => save(e, "retention")}>
+            <div className="retentionGrid">
+              {(
+                [
+                  ["stagingHours", "Synced originals", "hours", 720],
+                  ["failedDays", "Failed review deadline", "days", 90],
+                  ["thumbnailDays", "Thumbnail cache", "days", 365],
+                ] as const
+              ).map(([k, l, unit, max]) => (
+                <label key={k}>
+                  {l}
+                  <div className="unitInput">
+                    <input
+                      name={k}
+                      type="number"
+                      min="1"
+                      max={max}
+                      required
+                      defaultValue={d[k]}
+                    />
+                    <span className="mono">{unit}</span>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <div className="safetyNote">
+              Failed and uncertain originals stay staged until you review them
+              and are never silently discarded.
+            </div>
+            <Button disabled={action.busy}>Save retention</Button>
+          </form>
+        </section>
       </div>
     </>
   );

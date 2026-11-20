@@ -770,20 +770,102 @@ code {
 }
 
 /* Settings & Health */
-.settingsStack {
+.settingsLedger {
+  max-width: 920px;
   display: grid;
-  gap: 16px;
-  max-width: 960px;
+  gap: 0;
 }
 
-.settingsBridge {
-  display: grid;
-  gap: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+.routeStrip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--brand);
+  border-radius: 10px;
+  background: var(--surface);
+  margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 
-.settingsBridge .panel {
-  margin-bottom: 0;
+.routeNode {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.routeNode b {
+  display: block;
+  font-size: 0.88rem;
+}
+
+.routeNode .mono {
+  font-size: 0.74rem;
+  color: var(--ink-muted);
+}
+
+.routeArrow {
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+}
+
+.ledgerRow {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 24px;
+  padding: 24px 0;
+  border-bottom: 1px solid var(--line);
+  align-items: start;
+}
+
+.ledgerRow:last-child {
+  border-bottom: 0;
+}
+
+.ledgerAside {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.ledgerAside h2 {
+  margin: 0;
+}
+
+.ledgerAside p {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.ledgerMain {
+  min-width: 0;
+}
+
+.ruleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.actionSplit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dangerGhost {
+  color: var(--signal-err);
+}
+
+.dangerGhost:hover:not(:disabled) {
+  background: var(--signal-err-bg);
 }
 
 .retentionGrid {
@@ -1078,8 +1160,10 @@ footer {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .queueRow {
+  .queueRow,
+  .ledgerRow {
     grid-template-columns: 1fr;
+    gap: 12px;
   }
 
   .entrySide {
