@@ -33,6 +33,7 @@ x-node: &node
 services:
   postgres:
     image: postgres:18
+    container_name: rivosnap-postgres
     user: postgres
     restart: unless-stopped
     environment:
@@ -50,6 +51,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    container_name: rivosnap-redis
     user: redis
     restart: unless-stopped
     command: [redis-server, --appendonly, "yes", --maxmemory-policy, noeviction]
@@ -64,6 +66,7 @@ services:
   api:
     <<: *node
     build: {context: ., dockerfile: Dockerfile.api}
+    container_name: rivosnap-api
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -77,6 +80,7 @@ services:
   worker:
     <<: *node
     build: {context: ., dockerfile: Dockerfile.worker}
+    container_name: rivosnap-worker
     depends_on: &api_ready
       api: {condition: service_healthy}
     healthcheck:
@@ -91,6 +95,7 @@ services:
       dockerfile: Dockerfile.web
       args:
         NGINX_IMAGE: nginxinc/nginx-unprivileged:stable-alpine
+    container_name: rivosnap-web
     ports:
       - "127.0.0.1:${WEB_PORT:-8068}:8080"
       - "192.168.8.70:${WEB_PORT:-8068}:8080"
@@ -105,6 +110,7 @@ services:
 
   caddy:
     build: {context: ., dockerfile: infra/caddy/Dockerfile}
+    container_name: rivosnap-caddy
     profiles: [edge]
     environment: {APP_URL: "${APP_URL}"}
     ports: ["80:80","443:443"]
