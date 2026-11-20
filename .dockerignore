@@ -1,4 +1,8 @@
 **
+!VERSION
+!scripts/
+scripts/**
+!scripts/version-control.mjs
 !package.json
 !pnpm-lock.yaml
 !pnpm-workspace.yaml

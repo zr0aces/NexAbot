@@ -197,7 +197,127 @@ export function Dashboard() {
   );
 }
 
+function AlbumsView() {
+  const q = query<Group[]>("/groups");
+  const [filter, setFilter] = useState<"all" | "collecting" | "mapped">("all");
+  const groups = q.data ?? [];
+  const visible = groups.filter((g) => {
+    if (filter === "collecting") return g.enabled;
+    if (filter === "mapped") return !!g.googleAlbumId;
+    return true;
+  });
+  const totalItems = groups.reduce((sum, g) => sum + g._count.images, 0);
+
+  return (
+    <>
+      <Title
+        k="COLLECTIONS"
+        title="Albums"
+        sub="One Google Photos album for each authorized LINE group."
+      />
+      {q.error && (
+        <p role="alert" style={{ marginBottom: 12 }}>
+          {q.error.message}
+        </p>
+      )}
+      {groups.length > 0 && (
+        <div className="albumToolbar">
+          <div className="albumTabs" role="tablist" aria-label="Filter albums">
+            {(
+              [
+                ["all", `All (${groups.length})`],
+                ["collecting", `Collecting (${groups.filter((g) => g.enabled).length})`],
+                ["mapped", `Mapped (${groups.filter((g) => g.googleAlbumId).length})`],
+              ] as const
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                role="tab"
+                aria-selected={filter === k}
+                className={"albumTab" + (filter === k ? " active" : "")}
+                onClick={() => setFilter(k)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <span className="mono" style={{ fontSize: "0.78rem", color: "var(--ink-muted)" }}>
+            {totalItems} archived items
+          </span>
+        </div>
+      )}
+      <div className="albumGrid">
+        {visible.map((g) => {
+          const cover = g.images[0];
+          const statusDot = g.albumCreating
+            ? "warn"
+            : g.googleAlbumId
+              ? "ok"
+              : "";
+          const statusText = g.albumCreating
+            ? "Needs review"
+            : g.googleAlbumId
+              ? "Synced to Google"
+              : g.enabled
+                ? "Waiting for first item"
+                : "Paused";
+          return (
+            <Link
+              key={g.id}
+              className="albumFolio"
+              to={"/gallery?group=" + g.lineGroupId}
+            >
+              <div className="albumFrame">
+                {cover ? (
+                  <img
+                    loading="lazy"
+                    src={base + "/images/" + cover.id + "/thumbnail?size=640"}
+                    alt={name(g) + " album cover"}
+                  />
+                ) : (
+                  <div className="albumBlank">
+                    <ImageIcon size={26} />
+                    <span>No media yet</span>
+                  </div>
+                )}
+                <span className="albumCount mono">
+                  {g._count.images} {g._count.images === 1 ? "item" : "items"}
+                </span>
+              </div>
+              <div className="albumFolioBody">
+                <h2>{name(g)}</h2>
+                <div className="albumFolioMeta">
+                  <span className="albumState">
+                    <span className={"healthDot " + statusDot} />
+                    {statusText}
+                  </span>
+                  <time className="mono">
+                    {cover ? date(cover.lineEventTimestamp) : "—"}
+                  </time>
+                </div>
+              </div>
+            </Link>
+          );
+        })}
+      </div>
+      {q.data && visible.length === 0 && (
+        <div className="empty">
+          <ImageIcon size={28} />
+          <h2>{groups.length ? "No matching albums" : "No albums yet"}</h2>
+          <p>
+            {groups.length
+              ? "Switch filter above to view all groups."
+              : "Invite the LINE bot to a group and enable collection to start an album."}
+          </p>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function Groups({ albums = false }: { albums?: boolean }) {
+  if (albums) return <AlbumsView />;
   const q = query<Group[]>("/groups"),
     action = useAction();
   const [checkedMap, setCheckedMap] = useState<Record<string, boolean>>({});
@@ -205,143 +325,108 @@ export function Groups({ albums = false }: { albums?: boolean }) {
   return (
     <>
       <Title
-        k={albums ? "COLLECTIONS" : "SOURCES"}
-        title={albums ? "Albums" : "LINE groups"}
-        sub={
-          albums
-            ? "One Google Photos album for each collecting group."
-            : "New groups stay paused until you enable collection."
-        }
+        k="SOURCES"
+        title="LINE groups"
+        sub="New groups stay paused until you enable collection."
       />
       <p role="status" aria-live="polite">
         {action.msg || q.error?.message}
       </p>
       <div className="groupgrid">
         {q.data?.map((g) => (
-          <article
-            className={"panel" + (albums ? " albumCard" : "")}
-            key={g.id}
-          >
-            {albums && (
-              <Link className="albumCover" to={"/gallery?group=" + g.lineGroupId}>
-                {g.images[0] ? (
-                  <img
-                    loading="lazy"
-                    src={
-                      base + "/images/" + g.images[0].id + "/thumbnail?size=640"
-                    }
-                    alt={name(g) + " album cover"}
-                  />
-                ) : (
-                  <ImageIcon size={28} />
-                )}
-              </Link>
-            )}
-            <div className={albums ? "albumBody" : ""}>
-              <div className="railHead">
-                <span
-                  className={
-                    "pill " +
-                    (g.membershipStatus === "LEFT"
-                      ? "err"
-                      : g.enabled
-                        ? "ok"
-                        : "")
-                  }
-                >
-                  {g.membershipStatus} · {g.enabled ? "COLLECTING" : "PAUSED"}
-                </span>
-                <span className="mono" style={{ fontSize: "0.78rem" }}>
-                  {g._count.images} images
-                </span>
-              </div>
-              <h2 style={{ marginTop: 10 }}>{name(g)}</h2>
-              <p>
-                {g.googleAlbumId ? (
-                  <span className="pill ok">Album mapped</span>
-                ) : g.albumCreating ? (
-                  <span className="pill warn">Mapping needs review</span>
-                ) : (
-                  <span className="pill">No album yet</span>
-                )}
-              </p>
-              <p className="mono" style={{ fontSize: "0.78rem" }}>
-                {albums
-                  ? "Last image: " +
-                    (g.images[0]
-                      ? date(g.images[0].lineEventTimestamp) +
-                        " · " +
-                        g.images[0].uploadStatus
-                      : "None")
-                  : "Last event: " + date(g.lastEventAt)}
-              </p>
-              {!albums && (
-                <>
-                  <div className="codeRow">
-                    <code>{g.googleAlbumId ?? g.lineGroupId}</code>
-                    <CopyButton value={g.googleAlbumId ?? g.lineGroupId} />
-                  </div>
-                  {g.albumCreating && (
-                    <form
-                      className="resolveBox"
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        if (!checkedMap[g.id]) return;
-                        const f = new FormData(e.currentTarget);
-                        void action.run(() =>
-                          api("/groups/" + g.id + "/resolve-album", "POST", {
-                            albumId: String(f.get("albumId") ?? ""),
-                            confirmation: "I checked Google Photos",
-                          }),
-                        );
-                      }}
-                    >
-                      <label style={{ marginTop: 0 }}>
-                        Verified app-created album ID (blank if none created)
-                        <input name="albumId" />
-                      </label>
-                      <label
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                          fontWeight: 500,
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={!!checkedMap[g.id]}
-                          onChange={(e) =>
-                            setCheckedMap((m) => ({
-                              ...m,
-                              [g.id]: e.target.checked,
-                            }))
-                          }
-                        />
-                        I checked Google Photos for an existing album
-                      </label>
-                      <Button
-                        variant="secondary"
-                        disabled={action.busy || !checkedMap[g.id]}
-                      >
-                        Resolve uncertain album
-                      </Button>
-                    </form>
-                  )}
-                  <Button
-                    disabled={action.busy || g.membershipStatus === "LEFT"}
-                    variant={g.enabled ? "secondary" : "default"}
-                    onClick={() =>
-                      action.run(() =>
-                        api("/groups/" + g.id, "PATCH", { enabled: !g.enabled }),
-                      )
-                    }
-                  >
-                    {g.enabled ? "Pause collection" : "Enable collection"}
-                  </Button>
-                </>
-              )}
+          <article className="panel" key={g.id}>
+            <div className="railHead">
+              <span
+                className={
+                  "pill " +
+                  (g.membershipStatus === "LEFT"
+                    ? "err"
+                    : g.enabled
+                      ? "ok"
+                      : "")
+                }
+              >
+                {g.membershipStatus} · {g.enabled ? "COLLECTING" : "PAUSED"}
+              </span>
+              <span className="mono" style={{ fontSize: "0.78rem" }}>
+                {g._count.images} items
+              </span>
             </div>
+            <h2 style={{ marginTop: 10 }}>{name(g)}</h2>
+            <p>
+              {g.googleAlbumId ? (
+                <span className="pill ok">Album mapped</span>
+              ) : g.albumCreating ? (
+                <span className="pill warn">Mapping needs review</span>
+              ) : (
+                <span className="pill">No album yet</span>
+              )}
+            </p>
+            <p className="mono" style={{ fontSize: "0.78rem" }}>
+              {"Last event: " + date(g.lastEventAt)}
+            </p>
+            <div className="codeRow">
+              <code>{g.googleAlbumId ?? g.lineGroupId}</code>
+              <CopyButton value={g.googleAlbumId ?? g.lineGroupId} />
+            </div>
+            {g.albumCreating && (
+              <form
+                className="resolveBox"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!checkedMap[g.id]) return;
+                  const f = new FormData(e.currentTarget);
+                  void action.run(() =>
+                    api("/groups/" + g.id + "/resolve-album", "POST", {
+                      albumId: String(f.get("albumId") ?? ""),
+                      confirmation: "I checked Google Photos",
+                    }),
+                  );
+                }}
+              >
+                <label style={{ marginTop: 0 }}>
+                  Verified app-created album ID (blank if none created)
+                  <input name="albumId" />
+                </label>
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    fontWeight: 500,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={!!checkedMap[g.id]}
+                    onChange={(e) =>
+                      setCheckedMap((m) => ({
+                        ...m,
+                        [g.id]: e.target.checked,
+                      }))
+                    }
+                  />
+                  I checked Google Photos for an existing album
+                </label>
+                <Button
+                  variant="secondary"
+                  disabled={action.busy || !checkedMap[g.id]}
+                >
+                  Resolve uncertain album
+                </Button>
+              </form>
+            )}
+            <Button
+              disabled={action.busy || g.membershipStatus === "LEFT"}
+              variant={g.enabled ? "secondary" : "default"}
+              onClick={() =>
+                action.run(() =>
+                  api("/groups/" + g.id, "PATCH", { enabled: !g.enabled }),
+                )
+              }
+            >
+              {g.enabled ? "Pause collection" : "Enable collection"}
+            </Button>
           </article>
         ))}
       </div>

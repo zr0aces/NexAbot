@@ -71,7 +71,7 @@ export function parseReleaseArgs(argv, aliases = {}) {
   return options;
 }
 
-function readVersion(root) {
+export function readVersion(root) {
   const raw = fs.readFileSync(path.join(root, 'VERSION'), 'utf8');
   const value = raw.replace(/\r?\n$/, '');
   parseVersion(value);

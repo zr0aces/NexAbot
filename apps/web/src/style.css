@@ -255,6 +255,12 @@ aside > .asideFooter {
   border-top: 1px solid var(--line);
 }
 
+.appVersion {
+  display: block;
+  padding-inline: 12px;
+  color: var(--ink-muted);
+}
+
 aside > .asideFooter .button {
   width: 100%;
   justify-content: flex-start;
@@ -707,30 +713,133 @@ code {
   color: #f5efea;
 }
 
-/* Albums (full-bleed cover + layered edge) */
-.albumCard {
-  padding: 0;
+/* Albums (Photobook Shelf) */
+.albumToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.albumTabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.albumTab {
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.albumTab.active {
+  background: var(--brand-soft);
+  color: var(--brand-soft-ink);
+}
+
+.albumGrid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
+}
+
+.albumFolio {
+  text-decoration: none;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
   overflow: hidden;
   display: grid;
   box-shadow:
-    0 -3px 0 -1px var(--surface-sunken),
-    0 -4px 0 -1px var(--line);
+    0 -4px 0 -2px var(--surface-sunken),
+    0 -5px 0 -2px var(--line);
+  transition:
+    border-color 160ms ease,
+    transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 180ms ease;
 }
 
-.albumCover {
-  display: grid;
-  place-items: center;
+.albumFolio:hover {
+  border-color: var(--brand);
+  transform: translateY(-4px);
+  box-shadow:
+    0 -4px 0 -2px var(--brand-soft),
+    0 12px 24px -12px color-mix(in srgb, var(--brand) 45%, transparent);
+}
+
+.albumFrame {
+  position: relative;
   aspect-ratio: 16 / 10;
   background: var(--surface-sunken);
+  overflow: hidden;
+}
+
+.albumFrame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.albumBlank {
+  height: 100%;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+}
+
+.albumCount {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: rgb(13 11 10 / 0.76);
+  color: #f5efea;
+}
+
+.albumFolioBody {
+  padding: 14px 16px 16px;
+  display: grid;
+  gap: 8px;
+}
+
+.albumFolioBody h2 {
+  font-family: var(--font-display);
+  font-size: 1.32rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.albumFolioMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.8rem;
   color: var(--ink-muted);
 }
 
-.albumCover img {
-  aspect-ratio: 16 / 10;
-}
-
-.albumBody {
-  padding: 16px 18px 18px;
+.albumState {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* Queue Triage Rows */

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { test, expect } from "@playwright/test";
 test("gallery filters and keyboard-accessible viewer", async ({ page }) => {
   const group = {
@@ -39,6 +40,8 @@ test("gallery filters and keyboard-accessible viewer", async ({ page }) => {
   });
   await page.goto("/gallery");
   await expect(page.getByRole("heading", { name: "Gallery" })).toBeVisible();
+  const version = readFileSync(new URL("../VERSION", import.meta.url), "utf8").trimEnd();
+  await expect(page.locator(".asideFooter").getByText(`v${version}`, { exact: true })).toBeVisible();
   await page.getByRole("button", { name: /Photo from Family/ }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.keyboard.press("Escape");

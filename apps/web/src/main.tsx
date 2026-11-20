@@ -112,6 +112,8 @@ function SidebarHealth({ mobile = false }: { mobile?: boolean }) {
 
 const client = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
 
+declare const __APP_VERSION__: string;
+
 function Brand() {
   return (
     <div className="brand">
@@ -274,6 +276,7 @@ function App() {
         </nav>
         <div className="asideFooter">
           <SidebarHealth />
+          <small className="appVersion">v{__APP_VERSION__}</small>
           <Button variant="ghost" onClick={signOut}>
             <LogOut size={16} />
             Sign out
