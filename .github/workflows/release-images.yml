@@ -35,12 +35,13 @@ jobs:
           prefix="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rivosnap"
           for service in api worker web; do
             image="$prefix-$service:$version"
+            latest="$prefix-$service:latest"
             docker build --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
               --label "org.opencontainers.image.revision=$GITHUB_SHA" \
               --label "org.opencontainers.image.version=$version" \
-              -f "Dockerfile.$service" -t "$image" .
+              -f "Dockerfile.$service" -t "$image" -t "$latest" .
             docker run --rm --network none --entrypoint cat "$image" /app/VERSION | cmp VERSION -
-            echo "$image" >> "$RUNNER_TEMP/release-images"
+            printf '%s\n%s\n' "$image" "$latest" >> "$RUNNER_TEMP/release-images"
           done
 
       - name: Push verified images to GHCR
