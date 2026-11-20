@@ -4,9 +4,12 @@ import { z } from "zod";
 import { env } from "../shared/config";
 import { request } from "../shared/http";
 import { Fault } from "../shared/model";
+export const editScope =
+  "https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata";
 export const scopes = [
   "photoslibrary.appendonly",
   "photoslibrary.readonly.appcreateddata",
+  "photoslibrary.edit.appcreateddata",
 ].map((s) => "https://www.googleapis.com/auth/" + s);
 export function consent(state: string) {
   if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET)
@@ -47,10 +50,15 @@ export async function token(fields: Record<string, string>) {
 export const refresh = (t: string) =>
   token({ grant_type: "refresh_token", refresh_token: t });
 const root = "https://photoslibrary.googleapis.com/v1/";
-async function api(path: string, access: string, body?: unknown) {
+async function api(
+  path: string,
+  access: string,
+  body?: unknown,
+  method = body ? "POST" : "GET",
+) {
   return (
     await request(root + path, {
-      method: body ? "POST" : "GET",
+      method,
       headers: {
         Authorization: "Bearer " + access,
         "Content-Type": "application/json",
@@ -76,6 +84,17 @@ export const createAlbum = async (name: string, t: string) =>
   z
     .object({ id: z.string().min(1) })
     .parse(await api("albums", t, { album: { title: name } })).id;
+export const renameAlbum = async (id: string, name: string, t: string) =>
+  z
+    .object({ id: z.string().min(1) })
+    .parse(
+      await api(
+        "albums/" + encodeURIComponent(id) + "?updateMask=title",
+        t,
+        { title: name },
+        "PATCH",
+      ),
+    ).id;
 export const media = z.object({
   id: z.string().min(1),
   baseUrl: z.url().optional(),

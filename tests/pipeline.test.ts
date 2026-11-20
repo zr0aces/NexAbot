@@ -121,7 +121,9 @@ test.skipIf(!process.env["GALLERY_INTEGRATION"])(
       let albums = 0,
         creates = 0,
         mode = "success",
-        matched = "";
+        matched = "",
+        groupName = "Family",
+        patchedAlbumTitle = "";
       vi.stubGlobal(
         "fetch",
         vi.fn(async (url: string, init?: RequestInit) => {
@@ -174,7 +176,11 @@ test.skipIf(!process.env["GALLERY_INTEGRATION"])(
             return new Response("not a photo");
           if (url.includes("api-data.line.me"))
             return new Response(new Uint8Array(png));
-          if (url.endsWith("/summary")) return json({ groupName: "Family" });
+          if (url.endsWith("/summary")) return json({ groupName });
+          if (url.endsWith("/albums/album?updateMask=title") && init?.method === "PATCH") {
+            patchedAlbumTitle = JSON.parse(String(init.body)).title;
+            return json({ id: "album", title: patchedAlbumTitle });
+          }
           if (url.endsWith("/albums")) {
             albums++;
             return json({ id: "album" });
@@ -248,6 +254,48 @@ test.skipIf(!process.env["GALLERY_INTEGRATION"])(
       ]);
       expect(albums).toBe(1);
       await run();
+      groupName = "Family 2026";
+      const refreshed = await app.inject({
+        method: "POST",
+        url: prefix + "/groups/" + g.id + "/refresh",
+        headers,
+      });
+      expect(refreshed.statusCode).toBe(200);
+      expect(refreshed.json()).toMatchObject({
+        ok: true,
+        displayName: "Family 2026",
+        albumUpdated: true,
+      });
+      expect(patchedAlbumTitle).toBe("LINE - Family 2026");
+      expect(
+        (await db.lineGroup.findUniqueOrThrow({ where: { id: g.id } }))
+          .displayName,
+      ).toBe("Family 2026");
+      await db.googleConnection.update({
+        where: { id: 1 },
+        data: {
+          scopes:
+            "https://www.googleapis.com/auth/photoslibrary.appendonly https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
+        },
+      });
+      groupName = "Family Legacy Scope";
+      const legacyRefresh = await app.inject({
+        method: "POST",
+        url: prefix + "/groups/" + g.id + "/refresh",
+        headers,
+      });
+      expect(legacyRefresh.statusCode).toBe(200);
+      expect(legacyRefresh.json()).toMatchObject({
+        ok: true,
+        displayName: "Family Legacy Scope",
+        albumUpdated: false,
+        albumError:
+          "Reconnect Google Photos in Settings to sync the album title.",
+      });
+      await db.googleConnection.update({
+        where: { id: 1 },
+        data: { scopes: scopes.join(" ") },
+      });
       expect(
         (
           await app.inject({
