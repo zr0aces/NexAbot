@@ -23,10 +23,12 @@ test.skipIf(!process.env["GALLERY_INTEGRATION"])(
       MIN_FREE_MB: "1",
     });
     const { db } = await import("../packages/database"),
+      { clearAccessCache } = await import("../packages/database/connections"),
       { build } = await import("../apps/api/server"),
       { processEvent, resolveAlbum } = await import("../apps/worker/process"),
       { cleanup } = await import("../apps/worker/maintenance"),
-      { scopes } = await import("../packages/google-photos");
+      { scopes } = await import("../packages/google-photos"),
+      { pathFor } = await import("../packages/image-processing");
     const app = await build();
     const prefix = "/api/v1",
       origin = { origin: "http://localhost", "x-gallery-request": "1" };
@@ -138,6 +140,31 @@ test.skipIf(!process.env["GALLERY_INTEGRATION"])(
           if (url.endsWith("albums?pageSize=1")) return json({});
           if (url.includes("oauth2.googleapis.com"))
             return json({ access_token: "access" });
+          if (url.includes("photoslibrary.googleapis.com/v1/mediaItems/media-1"))
+            return json({
+              id: "media-1",
+              baseUrl: "https://lh3.googleusercontent.com/fixture-media-1",
+            });
+          if (url.startsWith("https://lh3.googleusercontent.com/fixture-media-1=w"))
+            return new Response(new Uint8Array(png), {
+              headers: { "content-type": "image/png" },
+            });
+          if (url.startsWith("https://lh3.googleusercontent.com/fixture-media-1=dv")) {
+            const range = new Headers(init?.headers).get("Range");
+            return new Response(range ? "partial" : "full-video", {
+              status: range ? 206 : 200,
+              headers: {
+                "content-type": "video/mp4",
+                ...(range
+                  ? {
+                      "content-range": "bytes 0-6/100",
+                      "accept-ranges": "bytes",
+                      "content-length": "7",
+                    }
+                  : {}),
+              },
+            });
+          }
           if (url.includes("api-data.line.me") && mode === "throttle")
             return new Response("slow", {
               status: 429,
@@ -257,6 +284,7 @@ test.skipIf(!process.env["GALLERY_INTEGRATION"])(
         );
         if (state === "ambiguous") {
           mode = "invalid-grant";
+          clearAccessCache();
           await app.inject({
             method: "POST",
             url: prefix + "/jobs/" + row.id + "/retry",
@@ -283,6 +311,13 @@ test.skipIf(!process.env["GALLERY_INTEGRATION"])(
       expect(creates).toBe(3);
       await cleanup(Date.now() + 31 * 86400000);
       expect(await stat(staged.stagingPath!).catch(() => null)).toBeNull();
+      expect(await stat(pathFor(staged.id, 320)).catch(() => null)).toBeNull();
+      const remoteThumb = await app.inject({
+        url: prefix + "/images/" + staged.id + "/thumbnail?size=320",
+        headers,
+      });
+      expect(remoteThumb.statusCode).toBe(200);
+      expect((await stat(pathFor(staged.id, 320))).size).toBeGreaterThan(0);
       const failed = await db.image.findFirstOrThrow({
         where: { uploadStatus: "FAILED" },
       });
@@ -297,6 +332,38 @@ test.skipIf(!process.env["GALLERY_INTEGRATION"])(
         (await db.image.findFirstOrThrow({ where: { lineMessageId: "bad" } }))
           .uploadStatus,
       ).toBe("UNRECOVERABLE");
+
+      expect(
+        (
+          await app.inject({
+            method: "PATCH",
+            url: prefix + "/settings",
+            headers,
+            payload: { collectVideos: true },
+          })
+        ).statusCode,
+      ).toBe(200);
+      const badVideo = event("message", "bad-video", "video");
+      badVideo.message.id = "bad-video";
+      await send([badVideo]);
+      await run();
+      const badVideoRow = await db.image.findFirstOrThrow({
+        where: { lineMessageId: "bad-video" },
+      });
+      expect(badVideoRow.mediaType).toBe("VIDEO");
+      expect(badVideoRow.uploadStatus).toBe("UNRECOVERABLE");
+      expect(badVideoRow.errorCode).toBe("UNSUPPORTED_VIDEO");
+      await db.image.update({
+        where: { id: staged.id },
+        data: { mediaType: "VIDEO", mimeType: "video/mp4" },
+      });
+      const remoteRange = await app.inject({
+        url: prefix + "/images/" + staged.id + "/content",
+        headers: { ...headers, range: "bytes=0-6" },
+      });
+      expect(remoteRange.statusCode).toBe(206);
+      expect(remoteRange.headers["content-range"]).toBe("bytes 0-6/100");
+      expect(remoteRange.body).toBe("partial");
       const { Queue, Worker } = await import("bullmq"),
         { dispatch } = await import("../apps/worker/dispatch");
       const connection = { url: process.env["REDIS_URL"] },

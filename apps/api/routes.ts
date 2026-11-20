@@ -6,7 +6,11 @@ import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { z } from "zod";
 import { db } from "../../packages/database";
-import { access, lineCredentials } from "../../packages/database/connections";
+import {
+  access,
+  clearAccessCache,
+  lineCredentials,
+} from "../../packages/database/connections";
 import { seal } from "../../packages/shared/crypto";
 import { env, settings } from "../../packages/shared/config";
 import {
@@ -26,6 +30,7 @@ import {
   pathFor,
   touch,
   thumbnail,
+  cacheThumbnail,
 } from "../../packages/image-processing";
 const id = (q: FastifyRequest) => z.object({ id: z.uuid() }).parse(q.params).id;
 const groupInclude = {
@@ -66,13 +71,18 @@ export function routes(
 ) {
   a.get("/health", async () => {
     await db.$queryRaw`SELECT 1`;
+    const owner = await db.owner.findUnique({
+      where: { id: 1 },
+      select: { settings: true },
+    });
+    const policy = settings(owner?.settings);
     return {
       database: "Online",
       redis: await redis.ping(),
       worker: (await redis.get("worker:heartbeat"))
         ? "Online"
         : "Heartbeat missing",
-      diskPressure: await pressured(),
+      diskPressure: await pressured(policy.collectVideos),
     };
   });
   a.get("/settings", async () => {
@@ -165,11 +175,12 @@ export function routes(
       create: { ownerId: 1, ...data },
       update: data,
     });
+    clearAccessCache();
     await audit("Google connected", "owner", "1");
     return r.redirect("/settings");
   });
   a.post("/google/validate", async () => {
-    await google.validate(await access());
+    await google.validate(await access(true));
     await db.googleConnection.update({
       where: { id: 1 },
       data: {
@@ -188,6 +199,7 @@ export function routes(
         lastError: null,
       },
     });
+    clearAccessCache();
     await audit("Google disconnected", "owner", "1");
     return { ok: true };
   });
@@ -361,8 +373,18 @@ export function routes(
       )
         throw new Fault("GOOGLE_MEDIA", "Invalid remote media URL.");
       const suffix = thumb ? "=w" + size + "-h" + size : i.mediaType === "VIDEO" ? "=dv" : "=d";
+      const rangeHeader =
+        !thumb &&
+        i.mediaType === "VIDEO" &&
+        typeof q.headers.range === "string" &&
+        /^bytes=\d*-\d*$/.test(q.headers.range)
+          ? q.headers.range
+          : undefined;
       const remote = await fetch(m.baseUrl + suffix, {
-        headers: { Authorization: "Bearer " + t },
+        headers: {
+          Authorization: "Bearer " + t,
+          ...(rangeHeader ? { Range: rangeHeader } : {}),
+        },
         signal: AbortSignal.timeout(i.mediaType === "VIDEO" && !thumb ? 300000 : 60000),
         redirect: "error",
       });
@@ -387,6 +409,30 @@ export function routes(
         await remote.body.cancel();
         throw new Fault("GOOGLE_MEDIA", "Unexpected content type from Google.");
       }
+      if (thumb) {
+        const buf = Buffer.from(await remote.arrayBuffer());
+        try {
+          const cachedPath = await cacheThumbnail(i.id, size, buf);
+          return r.type("image/webp").send(createReadStream(cachedPath));
+        } catch {
+          return r
+            .type(
+              mime === "application/octet-stream"
+                ? (i.mimeType ?? "image/jpeg")
+                : mime,
+            )
+            .send(buf);
+        }
+      }
+      if (remote.status === 206) r.code(206);
+      const contentRange = remote.headers.get("content-range");
+      if (contentRange) r.header("Content-Range", contentRange);
+      const acceptRanges = remote.headers.get("accept-ranges");
+      if (acceptRanges || i.mediaType === "VIDEO")
+        r.header("Accept-Ranges", acceptRanges ?? "bytes");
+      const contentLength = remote.headers.get("content-length");
+      if (contentLength && /^\d+$/.test(contentLength))
+        r.header("Content-Length", Number(contentLength));
       return r
         .type(
           mime === "application/octet-stream"
@@ -493,7 +539,7 @@ export function routes(
       usage(dirs[0]),
       usage(dirs[1]),
       free(),
-      pressured(),
+      pressured(s.collectVideos),
       db.image.findFirst({
         where: { uploadStatus: { not: "SYNCED" } },
         select: { createdAt: true },

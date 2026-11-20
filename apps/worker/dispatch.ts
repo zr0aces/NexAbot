@@ -13,6 +13,21 @@ export async function dispatch(q: Queue, now = new Date()) {
     take: 100,
   });
   for (const e of rows) {
+    if (e.publishedAt) {
+      const existing = await q.getJob(e.id);
+      if (
+        existing &&
+        ((await existing.isActive()) ||
+          (await existing.isWaiting()) ||
+          (await existing.isDelayed()))
+      ) {
+        await db.outboxEvent.updateMany({
+          where: { id: e.id },
+          data: { publishedAt: now },
+        });
+        continue;
+      }
+    }
     await q.add(
       e.eventType,
       {},

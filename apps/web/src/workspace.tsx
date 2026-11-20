@@ -1,6 +1,6 @@
 import { Onboarding } from "./onboarding";
 import { useState, type FormEvent } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Image as ImageIcon,
@@ -86,7 +86,8 @@ function CopyButton({ value, label = "Copy" }: { value: string; label?: string }
 }
 
 export function Dashboard() {
-  const q = query<Stats>("/dashboard/stats"),
+  const [sp] = useSearchParams(),
+    q = query<Stats>("/dashboard/stats"),
     prefs = query<Prefs>("/settings"),
     groups = query<Group[]>("/groups");
   if (!q.data) return <p>{q.error?.message ?? "Loading dashboard…"}</p>;
@@ -153,7 +154,7 @@ export function Dashboard() {
           </div>
         </div>
       </section>
-      {(!d.synced || location.search === "?setup") && (
+      {(!d.synced || sp.has("setup")) && (
         <Onboarding stats={d} prefs={prefs.data} groups={groups.data ?? []} />
       )}
       <div className="columns">

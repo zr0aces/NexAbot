@@ -311,9 +311,13 @@ export async function processEvent(outboxId: string) {
       ? "NEEDS_REVIEW"
       : f.transient && n < 8
         ? "RETRY_PENDING"
-        : ["LINE_404", "LINE_410", "UNSUPPORTED_IMAGE", "FILE_SIZE"].includes(
-              f.code,
-            )
+        : [
+              "LINE_404",
+              "LINE_410",
+              "UNSUPPORTED_IMAGE",
+              "UNSUPPORTED_VIDEO",
+              "FILE_SIZE",
+            ].includes(f.code)
           ? "UNRECOVERABLE"
           : "FAILED";
     if (i.uploadStatus === "SYNCED") throw e;

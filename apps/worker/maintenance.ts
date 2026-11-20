@@ -2,7 +2,11 @@ import { readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { db } from "../../packages/database";
 import { settings } from "../../packages/shared/config";
-import { dirs, pathFor } from "../../packages/image-processing";
+import {
+  dirs,
+  pathFor,
+  clearUsageCache,
+} from "../../packages/image-processing";
 export async function cleanup(now = Date.now()) {
   const s = settings(
     (await db.owner.findUnique({ where: { id: 1 } }))?.settings,
@@ -31,4 +35,8 @@ export async function cleanup(now = Date.now()) {
         await rm(p, { force: true });
     }
   }
+  await db.webhookEvent.deleteMany({
+    where: { receivedAt: { lt: new Date(now - 90 * 86400000) } },
+  });
+  clearUsageCache();
 }

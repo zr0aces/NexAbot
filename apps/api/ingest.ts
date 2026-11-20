@@ -78,7 +78,7 @@ export async function ingest(raw: unknown) {
         skipDuplicates: true,
       });
       if (!created.count) return;
-      if (await pressured(mediaType === "VIDEO"))
+      if (await pressured(policy.collectVideos || mediaType === "VIDEO"))
         throw new Fault(
           "DISK_PRESSURE",
           "Ingestion paused: staging disk reserve reached.",

@@ -21,7 +21,7 @@ export async function build() {
   await initDirs();
   const app = Fastify({
     logger: { redact: ["req.headers", "res.headers", "password", "token"] },
-    disableRequestLogging: true,
+    logController: new Fastify.LogController({ disableRequestLogging: true }),
     bodyLimit: 1024 * 1024,
     trustProxy: false,
   });
@@ -39,7 +39,21 @@ export async function build() {
   });
   await app.register(cookie, { secret: env.SESSION_SECRET });
   await app.register(helmet);
-  await app.register(rateLimit, { max: 600, timeWindow: "1 minute" });
+  function sid(req: FastifyRequest) {
+    const value = req.cookies.session;
+    return value ? req.unsignCookie(value).value : null;
+  }
+  await app.register(rateLimit, {
+    max: 600,
+    timeWindow: "1 minute",
+    keyGenerator: (req) => {
+      const url = req.url.split("?")[0];
+      if (url === "/api/webhooks/line")
+        return "webhook:" + String(req.headers["x-line-signature"] ?? req.ip);
+      const id = sid(req);
+      return id ? "session:" + id : "ip:" + req.ip;
+    },
+  });
   app.setErrorHandler(
     (e: Error & { statusCode?: number; code?: string }, req, r) => {
       const status =
@@ -85,10 +99,6 @@ export async function build() {
     signed: true,
     maxAge: 43200,
   };
-  function sid(req: FastifyRequest) {
-    const value = req.cookies.session;
-    return value ? req.unsignCookie(value).value : null;
-  }
   app.addHook("onRequest", async (req, r) => {
     r.header("Cache-Control", "no-store");
     const url = req.url.split("?")[0];

@@ -9,6 +9,7 @@ Add a link under **Active** when a plan is created; move it to **Completed** whe
 
 ## Completed
 
+- [Audit Remediation (AUD-001 to AUD-013)](completed/2026-11-20-audit-remediation.md) — Fix all findings from the 2026-11-20 full codebase engineering audit.
 - [Sidebar System Health & Settings refactor](completed/2026-11-20-sidebar-health-settings-refactor.md) — Live color-dot health strip in sidebar and Pipeline Bridge Settings layout.
 
 ## Filing rules

@@ -19,6 +19,7 @@ x-node: &node
     TZ: Asia/Bangkok
     MIN_FREE_MB: ${MIN_FREE_MB:-1024}
     MAX_IMAGE_SIZE_MB: ${MAX_IMAGE_SIZE_MB:-50}
+    MAX_VIDEO_SIZE_MB: ${MAX_VIDEO_SIZE_MB:-200}
     STAGING_PATH: /data/staging
     THUMBNAIL_PATH: /data/thumbnails
     STAGING_RETENTION_HOURS: ${STAGING_RETENTION_HOURS:-24}

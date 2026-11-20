@@ -41,11 +41,18 @@ export const pressured = async (reserveVideo = false) =>
       ? Math.max(env.MAX_IMAGE_SIZE_MB, env.MAX_VIDEO_SIZE_MB)
       : env.MAX_IMAGE_SIZE_MB)) *
     1048576;
+const usageCache = new Map<string, { bytes: number; expiresAt: number }>();
+export const clearUsageCache = () => usageCache.clear();
 export async function usage(d: string) {
-  let bytes = 0;
-  for (const f of await readdir(d)) {
-    bytes += (await stat(join(d, f)).catch(() => null))?.size ?? 0;
-  }
+  const now = Date.now();
+  const cached = usageCache.get(d);
+  if (cached && cached.expiresAt > now) return cached.bytes;
+  const files = await readdir(d);
+  const sizes = await Promise.all(
+    files.map(async (f) => (await stat(join(d, f)).catch(() => null))?.size ?? 0),
+  );
+  const bytes = sizes.reduce((sum, s) => sum + s, 0);
+  usageCache.set(d, { bytes, expiresAt: now + 10000 });
   return bytes;
 }
 export async function digest(path: string) {
@@ -80,9 +87,12 @@ export async function inspect(path: string) {
   };
 }
 export async function inspectVideo(path: string) {
-  let out: string;
+  let parsed: {
+    streams?: { width?: number; height?: number }[];
+    format?: { format_name?: string; duration?: string };
+  };
   try {
-    ({ stdout: out } = await runFile(
+    const { stdout: out } = await runFile(
       "ffprobe",
       [
         "-v",
@@ -96,14 +106,11 @@ export async function inspectVideo(path: string) {
         path,
       ],
       { timeout: 30000 },
-    ));
+    );
+    parsed = JSON.parse(out);
   } catch {
     throw new Fault("UNSUPPORTED_VIDEO", "Invalid or unreadable video.");
   }
-  const parsed = JSON.parse(out) as {
-    streams?: { width?: number; height?: number }[];
-    format?: { format_name?: string; duration?: string };
-  };
   const s = parsed.streams?.[0];
   const fmt = parsed.format?.format_name ?? "";
   const mime = fmt.includes("webm")
@@ -211,6 +218,30 @@ export async function stage(
   } finally {
     await rm(tmp, { force: true });
   }
+}
+export async function cacheThumbnail(
+  id: string,
+  size: 320 | 640,
+  input: Buffer,
+) {
+  const target = pathFor(id, size),
+    tmp = target + "." + randomUUID() + ".part";
+  try {
+    await sharp(input, { limitInputPixels: 100000000 })
+      .rotate()
+      .resize({
+        width: size,
+        height: size,
+        fit: "inside",
+        withoutEnlargement: true,
+      })
+      .webp()
+      .toFile(tmp);
+    await rename(tmp, target);
+  } finally {
+    await rm(tmp, { force: true });
+  }
+  return target;
 }
 export async function touch(path: string) {
   const now = new Date();
