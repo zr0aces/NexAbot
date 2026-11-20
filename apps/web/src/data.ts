@@ -1,5 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
-import type { State } from "../../../packages/shared/model";
+export const states = [
+  "RECEIVED",
+  "DOWNLOAD_PENDING",
+  "DOWNLOADING",
+  "STAGED",
+  "UPLOAD_PENDING",
+  "UPLOADING",
+  "CREATING_MEDIA",
+  "SYNCED",
+  "RETRY_PENDING",
+  "NEEDS_REVIEW",
+  "FAILED",
+  "UNRECOVERABLE",
+] as const;
+export type State = (typeof states)[number];
 export const base = "/api/v1";
 export async function api<T>(
   path: string,

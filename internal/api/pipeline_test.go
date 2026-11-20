@@ -67,6 +67,23 @@ func TestFullPipelineIntegration(t *testing.T) {
 	}
 
 	temp := t.TempDir()
+	// Provide stub ffmpeg if host does not have ffmpeg installed
+	if _, err := os.Stat("/usr/bin/ffmpeg"); err != nil {
+		binDir := filepath.Join(temp, "bin")
+		_ = os.MkdirAll(binDir, 0o755)
+		var buf bytes.Buffer
+		buf.WriteString("RIFF")
+		vp8l := []byte{0x2f, 0x00, 0x00, 0x00, 0x00, 0x07, 0x10, 0xfd, 0x7f, 0x1d, 0x08, 0x00}
+		buf.Write([]byte{byte(12 + len(vp8l)), 0, 0, 0})
+		buf.WriteString("WEBPVP8L")
+		buf.Write([]byte{byte(len(vp8l)), 0, 0, 0})
+		buf.Write(vp8l)
+		webpFixture := filepath.Join(binDir, "fixture.webp")
+		_ = os.WriteFile(webpFixture, buf.Bytes(), 0o644)
+		webpStub := "#!/bin/sh\nout=\"\"\nfor arg in \"$@\"; do out=\"$arg\"; done\ncp \"" + webpFixture + "\" \"$out\"\n"
+		_ = os.WriteFile(filepath.Join(binDir, "ffmpeg"), []byte(webpStub), 0o755)
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
 	env := config.Env{
 		AppURL:                 "http://localhost",
 		NodeEnv:                "test",
