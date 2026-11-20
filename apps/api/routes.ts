@@ -155,7 +155,7 @@ export function routes(
     )
       throw new Fault(
         "GOOGLE_SCOPES",
-        "Grant both Photos permissions and offline access.",
+        "Grant all requested Google Photos permissions and offline access.",
       );
     await google.validate(t.access_token);
     const mapped = await db.lineGroup.findFirst({
@@ -262,6 +262,75 @@ export function routes(
       ),
     ]);
     return { ok: true };
+  });
+  a.post("/groups/:id/refresh", async (q) => {
+    const gid = id(q),
+      g = await db.lineGroup.findUniqueOrThrow({ where: { id: gid } });
+    if (g.membershipStatus !== "JOINED")
+      throw new Fault(
+        "GROUP_LEFT",
+        "Bot is not a member of this LINE group.",
+      );
+    const { token } = await lineCredentials();
+    if (!token)
+      throw new Fault("LINE_CONFIG", "Configure LINE credentials first.");
+    const info = z
+      .object({ groupName: z.string().min(1) })
+      .parse(
+        await (
+          await line(
+            "group/" + encodeURIComponent(g.lineGroupId) + "/summary",
+            token,
+          )
+        ).json(),
+      );
+    const displayName = info.groupName
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .trim()
+      .slice(0, 500);
+    if (!displayName)
+      throw new Fault("LINE_SUMMARY", "LINE did not return a group name.");
+    await db.lineGroup.update({
+      where: { id: g.id },
+      data: { displayName },
+    });
+    let albumUpdated = false,
+      albumError: string | undefined;
+    if (g.googleAlbumId) {
+      const conn = await db.googleConnection.findUnique({ where: { id: 1 } });
+      if (
+        conn?.status === "CONNECTED" &&
+        conn.scopes.split(" ").includes(google.editScope)
+      ) {
+        try {
+          await google.renameAlbum(
+            g.googleAlbumId,
+            google.title(displayName, g.lineGroupId),
+            await access(),
+          );
+          albumUpdated = true;
+        } catch (e) {
+          albumError =
+            e instanceof Fault
+              ? e.message
+              : "Could not update Google Photos album title.";
+        }
+      } else if (conn?.status === "CONNECTED") {
+        albumError =
+          "Reconnect Google Photos in Settings to sync the album title.";
+      } else {
+        albumError =
+          "Connect Google Photos in Settings to sync the album title.";
+      }
+    }
+    await audit(
+      albumUpdated
+        ? "Group and Google album name refreshed"
+        : "Group name refreshed",
+      "group",
+      g.id,
+    );
+    return { ok: true, displayName, albumUpdated, albumError };
   });
   for (const route of ["/images", "/jobs"])
     a.get(route, async (q) => {

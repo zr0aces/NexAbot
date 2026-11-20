@@ -9,6 +9,7 @@ import {
   TriangleAlert,
   Copy,
   Check,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "../../../packages/ui/button";
 import {
@@ -52,9 +53,9 @@ export function useAction() {
       lock(true);
       set("");
       try {
-        await f();
+        const res = await f();
         await qc.invalidateQueries();
-        set(okMsg);
+        set(typeof res === "string" ? res : okMsg);
       } catch (e) {
         set((e as Error).message);
       } finally {
@@ -417,17 +418,40 @@ export function Groups({ albums = false }: { albums?: boolean }) {
                 </Button>
               </form>
             )}
-            <Button
-              disabled={action.busy || g.membershipStatus === "LEFT"}
-              variant={g.enabled ? "secondary" : "default"}
-              onClick={() =>
-                action.run(() =>
-                  api("/groups/" + g.id, "PATCH", { enabled: !g.enabled }),
-                )
-              }
-            >
-              {g.enabled ? "Pause collection" : "Enable collection"}
-            </Button>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Button
+                disabled={action.busy || g.membershipStatus === "LEFT"}
+                variant={g.enabled ? "secondary" : "default"}
+                onClick={() =>
+                  action.run(() =>
+                    api("/groups/" + g.id, "PATCH", { enabled: !g.enabled }),
+                  )
+                }
+              >
+                {g.enabled ? "Pause collection" : "Enable collection"}
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={action.busy || g.membershipStatus === "LEFT"}
+                onClick={() =>
+                  action.run(async () => {
+                    const res = await api<{
+                      albumUpdated: boolean;
+                      albumError?: string;
+                    }>("/groups/" + g.id + "/refresh", "POST");
+                    return res.albumUpdated
+                      ? "Group and Google Photos album title refreshed."
+                      : res.albumError
+                        ? "Group name refreshed. " + res.albumError
+                        : "Group name refreshed.";
+                  })
+                }
+              >
+                <RefreshCw size={14} />
+                Refresh name
+              </Button>
+            </div>
           </article>
         ))}
       </div>

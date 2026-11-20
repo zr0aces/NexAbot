@@ -27,6 +27,7 @@ After sign-in, follow **Dashboard → Setup pipeline**. To revisit the checklist
 |---|---|
 | Check that collection is working | Open **Dashboard** for synced, pending and failed counts and storage warnings. If work stops progressing, check **System health** in the sidebar (or open it) to verify Database, Redis, Worker and Disk. |
 | Pause or resume a group | In **LINE groups**, select **Pause collection** or **Enable collection**. Pausing stops new ingestion; it does not cancel accepted uploads or delete photos. Photos sent while paused are not backfilled. |
+| Refresh a renamed LINE group | In **LINE groups**, select **Refresh name** on the group card. RivoSnap fetches the latest group title from LINE and updates the mapped app-created Google Photos album title (`LINE - {Group Name}`). |
 | Find a photo | Use **Albums** to browse by group or **Gallery** to filter by group, date or upload status. Open a thumbnail for the larger view. Dates use Bangkok time. |
 | Restore Google access | In **Settings**, select **Reconnect** with the **same Google account**, then select **Validate connection**. Return to **Upload queue** to retry failed items. Disconnecting does not delete Google Photos originals. |
 | Change local retention | In **Settings**, adjust the retention periods and select **Save retention**. By default, synced originals are removed locally after 24 hours, thumbnails expire after 30 days, and failed or uncertain originals reach a review deadline after 7 days. The deadline does **not** automatically delete them. |
