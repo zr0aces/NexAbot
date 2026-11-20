@@ -1,0 +1,40 @@
+# NexAbot owner guide
+
+Start with **one group and one test photo**. Setup is complete when you can open that photo in both NexAbot’s private Gallery and the group’s album in your own Google Photos account.
+
+## Before you start
+
+- **If you manage the server:** follow the [deployment guide](DOCKER_DEPLOYMENT.md) to start the services and configure DNS and HTTPS. Follow [Google Cloud setup](GOOGLE_CLOUD_SETUP.md) to enable the Photos Library API, create a web OAuth client and configure its credentials on the server. Register this exact Google redirect URI: `https://dnbot.zerotrust.in.th/api/v1/google/callback`.
+- **If someone else manages the server:** ask them to complete those steps and give you the owner setup key privately. You do not need Docker access or the Google client secret to use the gallery.
+- Have access to your personal Google Photos account, your LINE Official Account’s Messaging API channel, and a group whose participants agree to collection.
+
+## Set up your first group
+
+After sign-in, follow **Dashboard → Setup pipeline**. To revisit the checklist after your first sync, open [Dashboard with setup shown](https://dnbot.zerotrust.in.th/?setup).
+
+1. **Claim your account.** Open **https://dnbot.zerotrust.in.th**. Enter your email, a password of at least 12 characters, and the setup key (`BOOTSTRAP_SECRET`). Select **Create owner account**. If an owner already exists, use **Sign in** instead. Use the HTTPS address even on your LAN; the published HTTP port (8068 by default) is for the reverse proxy.
+2. **Connect LINE.** In LINE Developers, open the Messaging API channel for your Official Account. Allow the bot to join group chats, issue a channel access token, and get the channel secret from **Basic settings**. In NexAbot, open **Settings → LINE Messaging API**, enter both values, and select **Save credentials**. If Settings already shows **Configured**, skip entering credentials and verify the webhook in the next step. If you do not have a channel yet, start with [LINE setup](LINE_SETUP.md).
+3. **Verify delivery.** In LINE Developers, set the webhook URL to `https://dnbot.zerotrust.in.th/api/webhooks/line`. Select **Verify**, then enable **Use webhook** and **Webhook redelivery**. Expect **Verify** to succeed. An empty verification request does not register a group, so the dashboard webhook step can remain incomplete until NexAbot discovers one.
+4. **Connect Google.** In NexAbot **Settings → Google Photos**, select **Connect Google Photos**. Choose the personal account that should own the albums and grant both requested permissions. After returning to NexAbot, select **Validate** and check for **CONNECTED**. If Google says the app is in testing, ask the server administrator to add your account as a test user.
+5. **Authorize the group.** Tell participants where their photos will be stored, then invite the Official Account to the LINE group. In NexAbot, open **LINE groups**, find that group, and select **Enable collection**. Confirm the group shows **COLLECTING**. If it shows **LEFT**, invite the bot back before enabling it. Repeat for each group you want to collect from.
+6. **Send and verify one photo.** Send a **new image message** to the enabled group. Open **Upload queue** to follow unfinished work. A fast upload may leave the queue before you see it. Open **Gallery**, filter by group and **SYNCED**, and open the thumbnail. In Google Photos, confirm the same image is in **LINE - {Group Name}** (or **LINE - Group {short ID}** if the name was unavailable). The first upload creates the album; inviting the bot alone does not. Old messages, direct messages and videos are not imported.
+
+## Manage collection
+
+| When you want to… | What to do |
+|---|---|
+| Check that collection is working | Open **Dashboard** for synced, pending and failed counts and storage warnings. If work stops progressing, open **System health** and check the worker, database and Redis. |
+| Pause or resume a group | In **LINE groups**, select **Pause collection** or **Enable collection**. Pausing stops new ingestion; it does not cancel accepted uploads or delete photos. Photos sent while paused are not backfilled. |
+| Find a photo | Use **Albums** to browse by group or **Gallery** to filter by group, date or upload status. Open a thumbnail for the larger view. Dates use Bangkok time. |
+| Restore Google access | In **Settings**, reconnect the **same Google account**, then select **Validate**. Return to **Upload queue** to retry failed items. Disconnecting does not delete Google Photos originals. |
+| Change local retention | In **Settings**, adjust the retention periods and select **Save retention**. By default, synced originals are removed locally after 24 hours, thumbnails expire after 30 days, and failed or uncertain originals reach a review deadline after 7 days. The deadline does **not** automatically delete them. |
+
+## If a photo does not appear
+
+1. **No queue entry and no gallery image:** confirm the group was enabled **before** the photo was sent. Check webhook verification and send one new test image.
+2. **RETRY_PENDING:** wait for the scheduled retry. **FAILED:** read the error, fix its cause, then select **Retry upload**. A full album will not roll over to a second album automatically.
+3. **NEEDS_REVIEW:** Google may already have created the photo. Select **Reconcile with Google** to search the mapped album without uploading again. Do not resend the photo merely to clear this state.
+4. **UNRECOVERABLE:** read the reason. If LINE content expired, send a new copy. If the format or size was rejected, send a supported image within the configured limit rather than retrying the rejected file.
+5. **Disk warning:** resolve stalled uploads or ask the administrator to expand storage. **Discard expired original** is irreversible: if Google has no copy, the photo may be lost. Do not use discard as a retry step.
+
+For expired LINE content, uncertain album creation, proxy errors or recovery procedures, use [Troubleshooting](TROUBLESHOOTING.md). Never include passwords, setup keys or provider tokens in a support request.

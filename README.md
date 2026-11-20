@@ -2,12 +2,14 @@
 
 A single-owner, private photo inbox for authorized personal LINE groups. New group images are staged, checked and uploaded into one Google Photos album per group. Google Photos is the only permanent home for originals.
 
+**First time using NexAbot?** Follow the [step-by-step owner guide](docs/OWNER_GUIDE.md) to connect your accounts, collect your first photo, and manage groups and uploads.
+
 ## Quick start
 
 1. Install Docker with Compose. Point DNS for `dnbot.zerotrust.in.th` to your HTTPS reverse proxy and provision its TLS certificate. Use `APP_URL=https://dnbot.zerotrust.in.th` for production, including when signing in from the LAN.
 2. Copy the supplied environment template to Compose's private environment file. Set APP_URL, the matching redirect URI, OAuth credentials and a URL-safe database password. Generate **separate** values with `openssl rand -hex 32` for SESSION_SECRET, TOKEN_ENCRYPTION_KEY and BOOTSTRAP_SECRET. Restrict file permissions to the owner.
 3. Run `docker compose up -d --build`. Forward https://dnbot.zerotrust.in.th to http://127.0.0.1:8068 from a same-host proxy, or to http://192.168.8.70:8068 from a LAN proxy. The host port defaults to 8068. To change it, set `WEB_PORT` in `.env`, run `docker compose up -d --no-deps web`, and update the proxy upstream. Leave bundled Caddy disabled. See [deployment](docs/DOCKER_DEPLOYMENT.md).
-4. Register the [LINE webhook](docs/LINE_SETUP.md) and [Google redirect URI](docs/GOOGLE_CLOUD_SETUP.md) using the public hostname, never the HTTP upstream. Visit https://dnbot.zerotrust.in.th and claim the owner account with the bootstrap key. Follow the dashboard setup checklist: configure LINE, register the webhook, connect Google, invite the bot, enable the group, send a **new** image, verify its upload and open Gallery.
+4. Open https://dnbot.zerotrust.in.th and claim the owner account. Follow the [owner setup steps](docs/OWNER_GUIDE.md#set-up-your-first-group) to save the LINE credentials **before** verifying the webhook, authorize Google Photos, and confirm your first synced image.
 
 ## Development and tests
 

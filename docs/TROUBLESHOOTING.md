@@ -25,4 +25,6 @@ These commands assume the default `WEB_PORT=8068`. If you changed it in `.env`, 
 
 ## First live acceptance
 
+For the exact screens and success checks, follow [Set up your first group](OWNER_GUIDE.md#set-up-your-first-group).
+
 Sign in over HTTPS → verify worker online → connect Google → invite bot → explicitly enable a test group → send a personal test photo. Confirm one image, its expected album, SYNCED status and private thumbnail. In a signed-out browser the content endpoint must return 401. Test the real OAuth consent and provider account quotas before relying on ongoing collection; mocks cannot verify them.
