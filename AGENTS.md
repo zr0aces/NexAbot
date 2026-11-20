@@ -1,11 +1,11 @@
 # RivoSnap project instructions
 
-Keep project rules here. Claude Code imports this file through CLAUDE.md; Codex and Antigravity use it directly or through GEMINI.md. Use Node 24 and the root pnpm workspace through Corepack.
+Keep project rules here. Claude Code imports this file through CLAUDE.md; Codex and Antigravity use it directly or through GEMINI.md. Use Go 1.26+ for the backend (`cmd/rivosnap`, `internal/*`) and Node 24 + the root pnpm workspace through Corepack for the web frontend (`apps/web`) and release scripts.
 
-- For ingestion, uploads, retries or cleanup, read docs/ARCHITECTURE.md. Collect only new images from enabled LINE groups. Preserve channel/message deduplication and the transactional outbox. Reconcile uncertain Google writes instead of repeating them. Never silently delete an unuploaded original.
+- For ingestion, uploads, retries or cleanup, read docs/ARCHITECTURE.md. Collect only new images (and videos when `collectVideos` is enabled) from enabled LINE groups. Preserve channel/message deduplication and the transactional outbox. Reconcile uncertain Google writes instead of repeating them. Never silently delete an unuploaded original.
 - For authentication, OAuth or media access, read docs/SECURITY.md. Keep secrets server-side. Do not print private environment files or expanded Compose configuration.
 - For deployment changes, read docs/DOCKER_DEPLOYMENT.md. Keep one Nginx web service, the existing host bindings and WEB_PORT contract. Do not remove named volumes or run tests against production.
-- Check TypeScript changes with `corepack pnpm typecheck` and focused tests. For pipeline changes run `bash scripts/test-integration.sh` against disposable services; for UI behavior use Playwright as described in README.md. Check Compose edits with `docker compose --profile edge config --quiet`.
+- Check Go changes with `go test ./...` and TypeScript/frontend changes with `corepack pnpm typecheck` and `corepack pnpm build`. For pipeline changes run `bash scripts/test-integration.sh` against disposable services; for UI behavior use Playwright as described in README.md. Check Compose edits with `docker compose --profile edge config --quiet`.
 
 ## Plans
 

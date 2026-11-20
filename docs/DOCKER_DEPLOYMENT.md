@@ -20,6 +20,8 @@ Only the web service is published: loopback and the host LAN address (192.168.8.
 
 **Existing Nginx/Caddy:** point DNS for the hostname in `APP_URL` to your proxy, terminate TLS there, and forward the entire HTTPS origin to **192.168.8.70:8068** from a LAN proxy or **127.0.0.1:8068** from the same host. Sign in through the canonical HTTPS origin; the direct HTTP listener is for the proxy, not for submitting credentials. Preserve Host and the raw webhook bytes. The API does not trust client-supplied forwarded addresses. Disable query-string logging for OAuth callback routes on every proxy. Keep credentials in the server environment. For Nginx on another LAN host, use `proxy_pass http://192.168.8.70:8068;` and `proxy_set_header Host $host;`. In a proxy container, loopback refers to that container, not the Docker host. See [connectivity checks](TROUBLESHOOTING.md#check-the-network-path).
 
+A fresh Go installation applies the same checked-in SQL and records the same migration history as Prisma. An unfinished or mismatched migration stops startup; investigate it on a restored copy rather than deleting migration records or volumes. An untracked pre-release schema requires a verified manual baseline before cutover.
+
 ## Operations
 
 ```sh
@@ -27,7 +29,7 @@ Only the web service is published: loopback and the host LAN address (192.168.8.
 docker compose stop
 
 # Manual migration (API also migrates before listening)
-docker compose run --rm api node node_modules/prisma/build/index.js migrate deploy
+docker compose run --rm api /app/rivosnap migrate
 
 # Update after taking a backup and checking release compatibility
 docker compose stop worker

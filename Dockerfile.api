@@ -1,21 +1,20 @@
-FROM node:24-bookworm-slim AS base
-ENV PNPM_HOME=/opt/pnpm PATH=/opt/pnpm:$PATH
-RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates ffmpeg && rm -rf /var/lib/apt/lists/* && corepack enable && corepack prepare pnpm@10.33.0 --activate
+FROM golang:1.27-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY packages/database/migrations packages/database/migrations
+COPY cmd cmd
+COPY internal internal
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/rivosnap ./cmd/rivosnap
+
+FROM alpine:3.21 AS runtime
+RUN apk add --no-cache ca-certificates ffmpeg tzdata && \
+    addgroup -g 1000 node && adduser -u 1000 -G node -s /bin/sh -D node
 WORKDIR /app
-
-FROM base AS deps
-COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
-RUN pnpm fetch --prod --frozen-lockfile
-COPY packages packages
-COPY apps apps
-RUN pnpm install --prod --offline --frozen-lockfile && pnpm generate
-
-FROM base AS runtime
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/packages ./packages
-COPY --from=deps /app/apps ./apps
-COPY VERSION package.json pnpm-workspace.yaml tsconfig.json ./
-RUN mkdir -p /data/staging /data/thumbnails && chown -R node:node /data
+COPY --from=build /out/rivosnap /app/rivosnap
+COPY VERSION /app/VERSION
+RUN ln -s /app/rivosnap /usr/local/bin/node && \
+    mkdir -p /data/staging /data/thumbnails && chown -R node:node /data /app
 USER node
 ENV NODE_ENV=production
-CMD ["sh","-c","node node_modules/prisma/build/index.js migrate deploy && exec node --import tsx apps/api/main.ts"]
+CMD ["/app/rivosnap","api"]
