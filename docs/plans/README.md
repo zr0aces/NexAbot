@@ -4,10 +4,11 @@ Add a link under **Active** when a plan is created; move it to **Completed** whe
 
 ## Active
 
-- [Frontend design refactor](2026-11-20-frontend-design-refactor.md) — Darkroom Contact Sheet & Archival Ledger UI refactor across all `apps/web` pages.
+None.
 
 ## Completed
 
+- [Frontend design refactor](completed/2026-11-20-frontend-design-refactor.md) — Darkroom Contact Sheet & Archival Ledger UI refactor across all `apps/web` pages.
 - [Video collection support](completed/2026-11-20-video-collection-support.md) — Ingest, process (`ffmpeg`), upload, and play back LINE group videos.
 - [Production-compatible embedded migration runner](completed/2026-11-21-production-auto-migrations.md) — Embed ordered SQL migrations in Go binary with `_prisma_migrations` ledger continuity, advisory locking, and automatic startup execution.
 - [Migrate API & Worker services to Go](completed/2026-11-21-go-backend-migration.md) — Replace Node/TypeScript API and worker runtimes with a compiled Go binary while preserving Nginx `web`, Postgres schema, encrypted tokens, and Compose contracts.

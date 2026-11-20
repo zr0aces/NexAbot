@@ -190,7 +190,7 @@ aside {
 }
 
 .brand {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 10px;
   font-weight: 750;
@@ -199,8 +199,15 @@ aside {
   color: var(--ink);
 }
 
+.entrySide .brand {
+  color: #f5efea;
+}
+
 .brand img {
   flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: block;
 }
 
 .navGroup {

@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="152 40 640 640">
   <title>RivoSnap</title>
   <g fill="none" stroke="#ff6600" stroke-linejoin="round" stroke-linecap="round">
-    <path stroke-width="40" d="M452 81q20-13 40 0l201 125q21 13 21 37v239q0 23-20 36L494 637q-21 13-42 0L251 518q-21-13-21-36V243q0-25 20-38Z"/>
+    <path fill="#181818" stroke-width="40" d="M452 81q20-13 40 0l201 125q21 13 21 37v239q0 23-20 36L494 637q-21 13-42 0L251 518q-21-13-21-36V243q0-25 20-38Z"/>
     <g stroke-width="36">
       <path d="M410 322v-68q0-32 32-32h167q33 0 33 32v96q0 31-33 31h-90"/>
       <path d="m471 323 44-44 42 39 23-23 24 22"/>
-      <path d="M334 326h153q32 0 32 32v85q0 33-32 33h-80l-43 46v-46h-30q-32 0-32-33v-85q0-32 32-32Z"/>
-      <path d="m340 427 42-42 38 38 29-26 32 30" stroke-width="28"/>
+      <path fill="#181818" stroke="#fff" d="M334 326h153q32 0 32 32v85q0 33-32 33h-80l-43 46v-46h-30q-32 0-32-33v-85q0-32 32-32Z"/>
+      <path stroke="#fff" d="m340 427 42-42 38 38 29-26 32 30" stroke-width="28"/>
     </g>
   </g>
 </svg>

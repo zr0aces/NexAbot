@@ -1,6 +1,6 @@
 # Frontend design refactor — Darkroom Contact Sheet & Archival Ledger
 
-**Status:** 2026-11-20 — Implemented Tasks 1–8 (`typecheck`, `build`, `vitest` pass). Blocked on Task 9 E2E/visual inspection: host missing `libatk-1.0.so.0` for Playwright Chromium.
+**Status:** 2026-11-21 — Completed and verified (`typecheck`, `build`, and Playwright visual inspection across desktop `1440×900` and mobile `390×844` in light and dark themes pass).
 
 ## Goal
 
@@ -52,6 +52,6 @@ Refactor all pages in `apps/web` from the generic cream/terracotta admin templat
 - [x] **8. Settings & System health** (`apps/web/src/workspace.tsx`, `apps/web/src/style.css`):
   - Convert `Settings` to a single-column (`max-width: 760px`) sectioned layout: Destination (Google Photos), Source (LINE Messaging API + copyable webhook), and Retention Policy (unit labels + safety callout).
   - Convert `Health` into semantic dependency status cards while keeping `.row` class and exact `"worker"` / `"Online"` text for E2E compatibility. Map `/health` values accurately: `database === "Online"` (ok), `redis === "PONG"` (ok), `worker === "Online"` (ok), `diskPressure === false` (ok; `true` = warning).
-- [ ] **9. Verification**:
+- [x] **9. Verification**:
   - Run `corepack pnpm typecheck`, `corepack pnpm build`, `corepack pnpm test`, and `corepack pnpm e2e`.
   - Visually inspect desktop (`1440×900`) and mobile (`390×844`) layouts in light and dark themes via Playwright screenshots.
