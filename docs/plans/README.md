@@ -4,7 +4,7 @@ Add a link under **Active** when a plan is created; move it to **Completed** whe
 
 ## Active
 
-None.
+- [Frontend design refactor](2026-11-20-frontend-design-refactor.md) — Darkroom Contact Sheet & Archival Ledger UI refactor across all `apps/web` pages.
 
 ## Completed
 

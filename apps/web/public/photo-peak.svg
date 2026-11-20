@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>NexAbot Photo Peak</title>
+  <style>
+    @media (prefers-color-scheme: dark) {
+      :root { --peak-frame: #76d6a5; --peak-ink: #f1f5f9; }
+    }
+  </style>
+  <g id="mark">
+    <path fill="var(--peak-frame, #086440)" d="M16 1 2 9.5v15L11 31v-3.8l-6-4.3V11.2L16 4.5l11 6.7v11.7l-6 4.3V31l9-6.5v-15Z"/>
+    <path fill="var(--peak-ink, #0F172A)" d="m7 22 12-12 6 12Z"/>
+  </g>
+</svg>

@@ -11,3 +11,5 @@ onlyBuiltDependencies:
 
 overrides:
   "@prisma/config>deepmerge-ts": "^8.0.0"
+  # GHSA-7589-6fvf-x4pw: Prisma 6.19.3 pins a vulnerable Effect release.
+  "@prisma/config@6.19.3>effect": "3.22.1"

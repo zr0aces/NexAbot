@@ -8,7 +8,6 @@ import {
 } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import {
-  Aperture,
   LayoutDashboard,
   Images,
   Layers,
@@ -22,27 +21,44 @@ import {
   ArrowUpRight,
 } from "lucide-react";
 import { Button } from "../../../packages/ui/button";
-import { api, query, labels } from "./data";
+import { api, query, labels, type Stats } from "./data";
 import { Dashboard, Groups, Settings, Health } from "./workspace";
 import { Library } from "./photos";
 import "./style.css";
-const icons = [
-  LayoutDashboard,
-  Images,
-  Layers,
-  Users,
-  CloudUpload,
-  Gear,
-  Activity,
+
+const navSections = [
+  {
+    title: "LIBRARY",
+    items: [
+      ["dashboard", "/", LayoutDashboard],
+      ["gallery", "/gallery", Images],
+      ["albums", "/albums", Layers],
+    ] as const,
+  },
+  {
+    title: "PIPELINE",
+    items: [
+      ["groups", "/groups", Users],
+      ["jobs", "/jobs", CloudUpload],
+      ["settings", "/settings", Gear],
+      ["health", "/health", Activity],
+    ] as const,
+  },
 ];
+
 const client = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
+
 function Brand() {
   return (
     <div className="brand">
-      <Aperture aria-hidden="true" /> NexAbot
+      <svg viewBox="0 0 32 32" aria-hidden="true">
+        <use href="/photo-peak.svg#mark" />
+      </svg>
+      NexAbot
     </div>
   );
 }
+
 function Login({ setup }: { setup: boolean }) {
   const { register, handleSubmit, formState } = useForm<{
     email: string;
@@ -55,18 +71,26 @@ function Login({ setup }: { setup: boolean }) {
       <div className="entrySide">
         <Brand />
         <div>
-          <small>PRIVATE PHOTO LIBRARY</small>
+          <small>PRIVATE PHOTO ARCHIVE</small>
           <h1>
             Your groups.
             <br />
-            One collection.
+            One contact sheet.
           </h1>
           <p>
             A private home for the photos your LINE groups send to Google
-            Photos.
+            Photos — staged safely, never silently dropped.
           </p>
         </div>
-        <span>LINE → Google Photos</span>
+        <div className="contactMotif" aria-hidden="true">
+          <div className="contactCell" />
+          <div className="contactCell lit" />
+          <div className="contactCell" />
+          <div className="contactCell lit" />
+          <div className="contactCell" />
+          <div className="contactCell lit" />
+        </div>
+        <span className="mono">LINE → Staging → Google Photos</span>
       </div>
       <form
         onSubmit={handleSubmit(async (data) => {
@@ -101,6 +125,7 @@ function Login({ setup }: { setup: boolean }) {
             minLength={setup ? 12 : 1}
             {...register("password")}
           />
+          {setup && <small>Minimum 12 characters</small>}
         </label>
         {setup && (
           <label>
@@ -117,6 +142,7 @@ function Login({ setup }: { setup: boolean }) {
     </main>
   );
 }
+
 function App() {
   const [dark, theme] = useState(
     () => localStorage.getItem("gallery-theme") === "dark",
@@ -125,10 +151,13 @@ function App() {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     localStorage.setItem("gallery-theme", dark ? "dark" : "light");
   }, [dark]);
+
   const auth = query<{ setup: boolean; authenticated: boolean }>(
       "/auth/status",
     ),
     qc = useQueryClient();
+  const stats = useQueryClient().getQueryData<Stats>(["/dashboard/stats"]);
+
   if (auth.error)
     return (
       <main role="alert">
@@ -137,39 +166,72 @@ function App() {
     );
   if (!auth.data) return <main>Opening library…</main>;
   if (!auth.data.authenticated) return <Login setup={auth.data.setup} />;
+
+  const signOut = async () => {
+    await api("/auth/logout", "POST");
+    qc.clear();
+    location.assign("/");
+  };
+  const attentionCount = (stats?.failed ?? 0) + (stats?.pending ?? 0);
+
   return (
     <div className="shell">
       <aside>
-        <Brand />
-        <small>WORKSPACE</small>
-        <nav>
-          {Object.entries(labels).map(([k, v], i) => {
-            const Icon = icons[i];
-            return (
-              <NavLink end key={k} to={k === "dashboard" ? "/" : "/" + k}>
-                <Icon size={18} />
-                {v}
-              </NavLink>
-            );
-          })}
+        <div className="asideTop">
+          <Brand />
+          <div className="mobileActions">
+            <Button
+              variant="ghost"
+              aria-label="Dark theme"
+              aria-pressed={dark}
+              onClick={() => theme(!dark)}
+            >
+              {dark ? <Sun size={16} /> : <Moon size={16} />}
+            </Button>
+            <Button variant="ghost" aria-label="Sign out" onClick={signOut}>
+              <LogOut size={16} />
+            </Button>
+          </div>
+        </div>
+        <nav aria-label="Primary">
+          {navSections.map((sec) => (
+            <div className="navGroup" key={sec.title}>
+              <small>{sec.title}</small>
+              {sec.items.map(([k, to, Icon]) => (
+                <NavLink end key={k} to={to}>
+                  <Icon size={17} />
+                  <span>{labels[k]}</span>
+                  {k === "jobs" && attentionCount > 0 && (
+                    <span className="navBadge">{attentionCount}</span>
+                  )}
+                </NavLink>
+              ))}
+            </div>
+          ))}
         </nav>
-        <Button
-          variant="ghost"
-          onClick={async () => {
-            await api("/auth/logout", "POST");
-            qc.clear();
-            location.assign("/");
-          }}
-        >
-          <LogOut size={16} />
-          Sign out
-        </Button>
+        <div className="asideFooter">
+          <Button variant="ghost" onClick={signOut}>
+            <LogOut size={16} />
+            Sign out
+          </Button>
+        </div>
       </aside>
       <main className="workspace">
         <header>
-          <span className="dot" /> Private workspace{" "}
+          <span className="dot" />
+          <span>Private workspace</span>
+          {stats?.google && (
+            <span
+              className={
+                "pill " + (stats.google === "CONNECTED" ? "ok" : "warn")
+              }
+            >
+              Google {stats.google.toLowerCase()}
+            </span>
+          )}
           <span className="tz">Asia/Bangkok</span>
           <Button
+            className="desktopOnly"
             variant="ghost"
             aria-label="Dark theme"
             aria-pressed={dark}
@@ -192,6 +254,7 @@ function App() {
     </div>
   );
 }
+
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={client}>

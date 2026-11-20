@@ -7,6 +7,8 @@ import {
   CheckCircle,
   Clock,
   TriangleAlert,
+  Copy,
+  Check,
 } from "lucide-react";
 import { Button } from "../../../packages/ui/button";
 import {
@@ -20,6 +22,7 @@ import {
   type Stats,
   type Settings as Prefs,
 } from "./data";
+
 export function Title({
   k,
   title,
@@ -37,6 +40,7 @@ export function Title({
     </section>
   );
 }
+
 export function useAction() {
   const qc = useQueryClient(),
     [msg, set] = useState(""),
@@ -59,18 +63,38 @@ export function useAction() {
     },
   };
 }
+
+function CopyButton({ value, label = "Copy" }: { value: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1800);
+      }
+    } catch {
+      // LAN HTTP contexts may disallow clipboard writes
+    }
+  };
+  return (
+    <Button type="button" variant="secondary" onClick={copy}>
+      {copied ? <Check size={13} /> : <Copy size={13} />}
+      {copied ? "Copied" : label}
+    </Button>
+  );
+}
+
 export function Dashboard() {
   const q = query<Stats>("/dashboard/stats"),
     prefs = query<Prefs>("/settings"),
     groups = query<Group[]>("/groups");
   if (!q.data) return <p>{q.error?.message ?? "Loading dashboard…"}</p>;
   const d = q.data;
-  const cards = [
-    ["Total images", d.total, ImageIcon],
-    ["Synced", d.synced, CheckCircle],
-    ["In progress", d.pending, Clock],
-    ["Need attention", d.failed, TriangleAlert],
-  ] as const;
+  const totalDisk = Math.max(1, d.stagingBytes + d.thumbnailBytes + d.freeBytes);
+  const stagingPct = Math.min(100, (d.stagingBytes / totalDisk) * 100);
+  const thumbPct = Math.min(100 - stagingPct, (d.thumbnailBytes / totalDisk) * 100);
+
   return (
     <>
       <Title
@@ -78,31 +102,68 @@ export function Dashboard() {
         title="Dashboard"
         sub="Collection activity across your authorized LINE groups."
       />
-      <div className="metrics">
-        {cards.map(([label, n, Icon]) => (
-          <div key={label}>
-            <Icon size={18} />
-            <strong>{n}</strong>
-            {label}
-          </div>
-        ))}
-      </div>
-      {(d.diskPressure || d.warnings > 0) && (
+      {(d.diskPressure || d.warnings > 0 || d.failed > 0) && (
         <div className="warning" role="alert">
-          {d.diskPressure ? "Low disk space. Ingestion is paused. " : ""}
-          {d.warnings > 0 &&
-            d.warnings +
-              " staged images are approaching or past review deadlines. Originals have been retained."}{" "}
-          <Link to="/jobs">Review queue</Link>
+          <span>
+            {d.diskPressure ? "Low disk space. Ingestion is paused. " : ""}
+            {d.warnings > 0 &&
+              d.warnings +
+                " staged images are approaching or past review deadlines. Originals have been retained. "}
+            {d.failed > 0 && d.failed + " items need attention."}
+          </span>
+          <Link to="/jobs">Review queue →</Link>
         </div>
       )}
+      <section className="rail" aria-label="Ingestion pipeline">
+        <div className="railNode">
+          <div className="railHead">
+            <span>1 · LINE Sources</span>
+            <ImageIcon size={16} />
+          </div>
+          <strong>{d.total}</strong>
+          <div className="railMeta">
+            <span>{d.groups} active groups</span>
+            <Link to="/groups">Manage →</Link>
+          </div>
+        </div>
+        <div className="railNode">
+          <div className="railHead">
+            <span>2 · Local Staging</span>
+            {d.failed > 0 ? <TriangleAlert size={16} /> : <Clock size={16} />}
+          </div>
+          <strong>{d.pending}</strong>
+          <div className="railMeta">
+            <span>
+              {d.failed > 0 ? `${d.failed} need attention` : "In progress"}
+            </span>
+            <Link to="/jobs">Queue →</Link>
+          </div>
+        </div>
+        <div className="railNode">
+          <div className="railHead">
+            <span>3 · Google Photos</span>
+            <CheckCircle size={16} />
+          </div>
+          <strong>{d.synced}</strong>
+          <div className="railMeta">
+            <span className={"pill " + (d.google === "CONNECTED" ? "ok" : "warn")}>
+              {d.google}
+            </span>
+            <Link to="/gallery">Gallery →</Link>
+          </div>
+        </div>
+      </section>
       {(!d.synced || location.search === "?setup") && (
         <Onboarding stats={d} prefs={prefs.data} groups={groups.data ?? []} />
       )}
       <div className="columns">
         <section className="panel">
-          <small>COLLECTION STATUS</small>
-          <h2>Storage & connections</h2>
+          <small>STORAGE & CONNECTIONS</small>
+          <h2>Local cache & disk</h2>
+          <div className="diskBar" aria-hidden="true">
+            <div className="diskSegStaging" style={{ width: `${stagingPct}%` }} />
+            <div className="diskSegThumb" style={{ width: `${thumbPct}%` }} />
+          </div>
           {Object.entries({
             "Google Photos": d.google,
             "Active groups": d.groups,
@@ -113,7 +174,7 @@ export function Dashboard() {
           }).map(([k, v]) => (
             <div className="row" key={k}>
               <span>{k}</span>
-              <b>{v}</b>
+              <b className="mono">{v}</b>
             </div>
           ))}
         </section>
@@ -123,8 +184,8 @@ export function Dashboard() {
           {d.recent.length ? (
             d.recent.map((e) => (
               <div className="row" key={e.id}>
-                {e.action}
-                <time>{date(e.createdAt)}</time>
+                <span>{e.action}</span>
+                <time className="mono">{date(e.createdAt)}</time>
               </div>
             ))
           ) : (
@@ -135,13 +196,16 @@ export function Dashboard() {
     </>
   );
 }
+
 export function Groups({ albums = false }: { albums?: boolean }) {
   const q = query<Group[]>("/groups"),
     action = useAction();
+  const [checkedMap, setCheckedMap] = useState<Record<string, boolean>>({});
+
   return (
     <>
       <Title
-        k="SOURCES"
+        k={albums ? "COLLECTIONS" : "SOURCES"}
         title={albums ? "Albums" : "LINE groups"}
         sub={
           albums
@@ -149,12 +213,17 @@ export function Groups({ albums = false }: { albums?: boolean }) {
             : "New groups stay paused until you enable collection."
         }
       />
-      <p role="status">{action.msg || q.error?.message}</p>
+      <p role="status" aria-live="polite">
+        {action.msg || q.error?.message}
+      </p>
       <div className="groupgrid">
         {q.data?.map((g) => (
-          <article className="panel" key={g.id}>
+          <article
+            className={"panel" + (albums ? " albumCard" : "")}
+            key={g.id}
+          >
             {albums && (
-              <Link className="cover" to={"/gallery?group=" + g.lineGroupId}>
+              <Link className="albumCover" to={"/gallery?group=" + g.lineGroupId}>
                 {g.images[0] ? (
                   <img
                     loading="lazy"
@@ -164,75 +233,115 @@ export function Groups({ albums = false }: { albums?: boolean }) {
                     alt={name(g) + " album cover"}
                   />
                 ) : (
-                  <ImageIcon />
+                  <ImageIcon size={28} />
                 )}
               </Link>
             )}
-            <small>
-              {g.membershipStatus} · {g.enabled ? "COLLECTING" : "PAUSED"}
-            </small>
-            <h2>{name(g)}</h2>
-            <p>
-              {g._count.images} images ·{" "}
-              {g.googleAlbumId
-                ? "Album mapped"
-                : g.albumCreating
-                  ? "Mapping needs review"
-                  : "No album yet"}
-            </p>
-            <p>
-              {albums
-                ? "Last image: " +
-                  (g.images[0]
-                    ? date(g.images[0].lineEventTimestamp) +
-                      " · " +
-                      g.images[0].uploadStatus
-                    : "None")
-                : "Last event: " + date(g.lastEventAt)}
-            </p>
-            {!albums && (
-              <>
-                <code>{g.googleAlbumId ?? g.lineGroupId}</code>
-                {g.albumCreating && (
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      const f = new FormData(e.currentTarget);
-                      if (
-                        window.confirm(
-                          "Have you checked the destination account and confirmed this mapping? Leave the ID blank only if no album was created.",
-                        )
-                      )
+            <div className={albums ? "albumBody" : ""}>
+              <div className="railHead">
+                <span
+                  className={
+                    "pill " +
+                    (g.membershipStatus === "LEFT"
+                      ? "err"
+                      : g.enabled
+                        ? "ok"
+                        : "")
+                  }
+                >
+                  {g.membershipStatus} · {g.enabled ? "COLLECTING" : "PAUSED"}
+                </span>
+                <span className="mono" style={{ fontSize: "0.78rem" }}>
+                  {g._count.images} images
+                </span>
+              </div>
+              <h2 style={{ marginTop: 10 }}>{name(g)}</h2>
+              <p>
+                {g.googleAlbumId ? (
+                  <span className="pill ok">Album mapped</span>
+                ) : g.albumCreating ? (
+                  <span className="pill warn">Mapping needs review</span>
+                ) : (
+                  <span className="pill">No album yet</span>
+                )}
+              </p>
+              <p className="mono" style={{ fontSize: "0.78rem" }}>
+                {albums
+                  ? "Last image: " +
+                    (g.images[0]
+                      ? date(g.images[0].lineEventTimestamp) +
+                        " · " +
+                        g.images[0].uploadStatus
+                      : "None")
+                  : "Last event: " + date(g.lastEventAt)}
+              </p>
+              {!albums && (
+                <>
+                  <div className="codeRow">
+                    <code>{g.googleAlbumId ?? g.lineGroupId}</code>
+                    <CopyButton value={g.googleAlbumId ?? g.lineGroupId} />
+                  </div>
+                  {g.albumCreating && (
+                    <form
+                      className="resolveBox"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (!checkedMap[g.id]) return;
+                        const f = new FormData(e.currentTarget);
                         void action.run(() =>
                           api("/groups/" + g.id + "/resolve-album", "POST", {
                             albumId: String(f.get("albumId") ?? ""),
                             confirmation: "I checked Google Photos",
                           }),
                         );
-                    }}
+                      }}
+                    >
+                      <label style={{ marginTop: 0 }}>
+                        Verified app-created album ID (blank if none created)
+                        <input name="albumId" />
+                      </label>
+                      <label
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          fontWeight: 500,
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={!!checkedMap[g.id]}
+                          onChange={(e) =>
+                            setCheckedMap((m) => ({
+                              ...m,
+                              [g.id]: e.target.checked,
+                            }))
+                          }
+                        />
+                        I checked Google Photos for an existing album
+                      </label>
+                      <Button
+                        variant="secondary"
+                        disabled={action.busy || !checkedMap[g.id]}
+                      >
+                        Resolve uncertain album
+                      </Button>
+                    </form>
+                  )}
+                  <Button
+                    disabled={action.busy || g.membershipStatus === "LEFT"}
+                    variant={g.enabled ? "secondary" : "default"}
+                    onClick={() =>
+                      action.run(() =>
+                        api("/groups/" + g.id, "PATCH", { enabled: !g.enabled }),
+                      )
+                    }
                   >
-                    <label>
-                      Verified app-created album ID
-                      <input name="albumId" />
-                    </label>
-                    <Button variant="secondary" disabled={action.busy}>
-                      Resolve uncertain album
-                    </Button>
-                  </form>
-                )}
-                <Button
-                  disabled={action.busy || g.membershipStatus === "LEFT"}
-                  variant="secondary"
-                  onClick={() =>
-                    action.run(() =>
-                      api("/groups/" + g.id, "PATCH", { enabled: !g.enabled }),
-                    )
-                  }
-                >
-                  {g.enabled ? "Pause collection" : "Enable collection"}
-                </Button>
-              </>
-            )}
+                    {g.enabled ? "Pause collection" : "Enable collection"}
+                  </Button>
+                </>
+              )}
+            </div>
           </article>
         ))}
       </div>
@@ -245,12 +354,14 @@ export function Groups({ albums = false }: { albums?: boolean }) {
     </>
   );
 }
+
 export function Settings() {
   const q = query<Prefs>("/settings"),
     google = query<{ status: string; lastError?: string }>("/google/status"),
     action = useAction();
   if (!q.data) return <p>{q.error?.message ?? "Loading settings…"}</p>;
   const d = q.data;
+
   function save(e: FormEvent<HTMLFormElement>, kind: string) {
     e.preventDefault();
     const form = e.currentTarget,
@@ -268,6 +379,7 @@ export function Settings() {
       if (kind === "line") form.reset();
     });
   }
+
   return (
     <>
       <Title
@@ -275,44 +387,63 @@ export function Settings() {
         title="Settings"
         sub="Manage the accounts, storage policies and webhook for this library."
       />
-      <p role="status">{action.msg}</p>
-      <div className="columns">
+      <p role="status" aria-live="polite">
+        {action.msg}
+      </p>
+      <div className="settingsStack">
         <section className="panel">
-          <small>DESTINATION</small>
+          <div className="railHead">
+            <small>1 · DESTINATION</small>
+            <span
+              className={
+                "pill " + (google.data?.status === "CONNECTED" ? "ok" : "warn")
+              }
+            >
+              {google.data?.status ?? "UNKNOWN"}
+            </span>
+          </div>
           <h2>Google Photos</h2>
+          {google.data?.lastError && (
+            <p className="pill err">{google.data.lastError}</p>
+          )}
           <p>
-            {google.data?.status} {google.data?.lastError}
+            Sends personal images from enabled groups to your Google Photos
+            account. Reads only app-created albums and media to verify uploads
+            and display them privately.
           </p>
-          <p>
-            This integration sends personal images from enabled groups to your
-            Google Photos account. It reads only app-created albums and media to
-            verify uploads and display them privately.
-          </p>
-          <a className="button primary" href={base + "/google/connect"}>
-            Connect Google Photos
-          </a>{" "}
-          <Button
-            disabled={action.busy}
-            variant="ghost"
-            onClick={() => action.run(() => api("/google/validate", "POST"))}
-          >
-            Validate
-          </Button>{" "}
-          <Button
-            disabled={action.busy}
-            variant="ghost"
-            onClick={() => action.run(() => api("/google/disconnect", "POST"))}
-          >
-            Disconnect
-          </Button>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <a className="button primary" href={base + "/google/connect"}>
+              Connect Google Photos
+            </a>
+            <Button
+              disabled={action.busy}
+              variant="secondary"
+              onClick={() => action.run(() => api("/google/validate", "POST"))}
+            >
+              Validate
+            </Button>
+            <Button
+              disabled={action.busy}
+              variant="ghost"
+              onClick={() => action.run(() => api("/google/disconnect", "POST"))}
+            >
+              Disconnect
+            </Button>
+          </div>
         </section>
+
         <form className="panel" onSubmit={(e) => save(e, "line")}>
-          <small>GROUP SOURCE</small>
+          <div className="railHead">
+            <small>2 · GROUP SOURCE</small>
+            <span className={"pill " + (d.lineConfigured ? "ok" : "warn")}>
+              {d.lineConfigured ? "Configured" : "Needs credentials"}
+            </span>
+          </div>
           <h2>LINE Messaging API</h2>
           <p>
             {d.lineConfigured
-              ? "Credentials configured."
-              : "Add the channel credentials to begin."}
+              ? "Credentials are stored server-side. Submit new values below to rotate."
+              : "Add the channel credentials to begin collecting from LINE groups."}
           </p>
           <label>
             Access token
@@ -323,11 +454,19 @@ export function Settings() {
             <input name="secret" type="password" required autoComplete="off" />
           </label>
           <Button disabled={action.busy}>Save credentials</Button>
-          <p>Register this webhook URL in LINE Developers:</p>
-          <code>{d.webhook}</code>
+          {d.webhook && (
+            <div style={{ marginTop: 14 }}>
+              <small>WEBHOOK URL</small>
+              <div className="codeRow">
+                <code>{d.webhook}</code>
+                <CopyButton value={d.webhook} />
+              </div>
+            </div>
+          )}
         </form>
+
         <form className="panel" onSubmit={(e) => save(e, "retention")}>
-          <small>LOCAL CACHE</small>
+          <small>3 · LOCAL CACHE</small>
           <h2>Retention policy</h2>
           {(
             [
@@ -348,16 +487,23 @@ export function Settings() {
               />
             </label>
           ))}
-          <p>
-            Failed and uncertain originals are held for review, never silently
-            discarded.
-          </p>
+          <div className="safetyNote">
+            Failed and uncertain originals are held for manual review and are
+            never silently discarded.
+          </div>
           <Button disabled={action.busy}>Save retention</Button>
         </form>
       </div>
     </>
   );
 }
+
+function healthStatus(k: string, v: string | boolean): "ok" | "warn" | "err" {
+  if (k === "diskPressure") return v === false ? "ok" : "warn";
+  if (v === "Online" || v === "PONG") return "ok";
+  return "err";
+}
+
 export function Health() {
   const q = query<Record<string, string | boolean>>("/health");
   return (
@@ -367,15 +513,26 @@ export function Health() {
         title="System health"
         sub="Live dependency checks for ingestion and uploads."
       />
-      <section className="panel">
-        {q.error?.message}
-        {Object.entries(q.data ?? {}).map(([k, v]) => (
-          <div className="row" key={k}>
-            <b>{k}</b>
-            {String(v)}
-          </div>
-        ))}
-      </section>
+      {q.error && <p role="alert">{q.error.message}</p>}
+      <div className="healthGrid">
+        {Object.entries(q.data ?? {}).map(([k, v]) => {
+          const state = healthStatus(k, v);
+          const display =
+            k === "diskPressure"
+              ? v
+                ? "Pressured"
+                : "Normal"
+              : String(v);
+          return (
+            <section className="healthCard" key={k}>
+              <div className="row">
+                <b>{k}</b>
+                <span className={"pill " + state}>{display}</span>
+              </div>
+            </section>
+          );
+        })}
+      </div>
     </>
   );
 }

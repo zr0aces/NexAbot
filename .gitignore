@@ -14,8 +14,13 @@ coverage/
 *.tsbuildinfo
 *.log
 playwright/.auth/
+graphify-out/
 
 # Private tool state; keep shared project instructions visible
 .claude/settings.local.json
 .claude/worktrees/
+.codex/
+.gemini/
+.worktrees/
+cache/
 .DS_Store
