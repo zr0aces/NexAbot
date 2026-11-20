@@ -8,4 +8,4 @@ Create a **Web application** OAuth client and register the full authorized redir
 
 For sustained use, publish the consent screen as appropriate and complete verification Google requires for your audience and scopes. Publishing is not a guarantee of verification. External testing-mode refresh tokens for Photos access normally expire in seven days. Account storage, quota, revocation and policy restrictions still apply to private deployments.
 
-Acceptance with real credentials: connect, grant both permissions, Validate, send a new authorized group image, and check the album in the Google Photos account. Keep using the same account and OAuth project.
+Acceptance with real credentials: connect, grant all three requested permissions, Validate, send a new authorized group image, and check the album in the Google Photos account. Keep using the same account and OAuth project.

@@ -1,6 +1,6 @@
 # RivoSnap
 
-A single-owner, private photo inbox for authorized personal LINE groups. New group images are staged, checked and uploaded into one Google Photos album per group. Google Photos is the only permanent home for originals.
+A single-owner, private photo and video inbox for authorized personal LINE groups. New group images (and optional videos when enabled in Settings) are staged, checked and uploaded into one Google Photos album per group. Google Photos is the only permanent home for originals.
 
 **First time using RivoSnap?** Follow the [step-by-step owner guide](docs/OWNER_GUIDE.md) to connect your accounts, collect your first photo, and manage groups and uploads.
 

@@ -6,7 +6,7 @@
 | Webhook Verify fails | Check public TLS, exact URL, unmodified body and matching channel secret. Enable redelivery. A full staging disk returns a temporary error rather than dropping images. |
 | Missing group | Enable LINE group participation and invite the correct Official Account. Direct messages and rooms never register. An already joined group can be discovered by a new group image but stays disabled. |
 | No image after enabling | Send a **new image** after enablement. Check membership, configuration and worker heartbeat. LINE_404/410 means content is no longer available; sending a new image is required. |
-| OAuth consent fails | Match redirect URI exactly, enable Library API, add test user if needed, grant both scopes. Reauthorize the original account/project after invalid_grant. |
+| OAuth consent fails | Match redirect URI exactly, enable Library API, add test user if needed, grant all requested scopes (`appendonly`, `readonly.appcreateddata`, `edit.appcreateddata`). Reauthorize the original account/project after invalid_grant. |
 | Rate limit/network | Wait for bounded backoff and Retry-After. Inspect the queue and health before retrying. Do not replay the original webhook to force another upload. |
 | Album capacity or account storage | Resolve the provider limit, then retry FAILED. No overflow album is created; changing strategy needs explicit approval. |
 | ALBUM_REVIEW | Inspect the app-created destination albums in Google. In LINE groups resolve the flag using a verified **Library API album ID**, not the browser sharing URL. Leave it blank only after confirming no album was created. Retry the failed image. Never guess based solely on a title. |

@@ -8,9 +8,9 @@ Disconnect removes the stored refresh token, not Google media. To revoke the gra
 
 ## Official documentation reviewed before implementation
 
-- [API changes](https://developers.google.com/photos/support/updates): since March 31, 2025 Library API access is scoped to app-created content. The app cannot browse the owner's pre-existing library. No shared albums, legacy broad scopes or edit scope.
+- [API changes](https://developers.google.com/photos/support/updates): since March 31, 2025 Library API access is scoped to app-created content (`photoslibrary.appendonly`, `photoslibrary.readonly.appcreateddata`, and `photoslibrary.edit.appcreateddata` for updating app-created album titles). The app cannot browse the owner's pre-existing library. No shared albums or legacy broad scopes.
 - [Upload media](https://developers.google.com/photos/library/guides/upload-media): upload bytes first, then create media. An upload token lasts one day; receiving it is not success. Inspect each batchCreate item even on HTTP 200/207. Create serially per user.
-- [Manage albums](https://developers.google.com/photos/library/guides/manage-albums): at most 20,000 items per album. No overflow album. Sanitized titles are limited to 500 characters; a title is not an identifier.
+- [Manage albums](https://developers.google.com/photos/library/guides/manage-albums): at most 20,000 items per album. No overflow album. Sanitized titles are limited to 500 characters; a title is not an identifier, and app-created album titles can be updated via `albums.patch` (`updateMask=title`) when a LINE group is renamed.
 - [Access media](https://developers.google.com/photos/library/guides/access-media-items): base URLs expire after about 60 minutes and may expire sooner. Resolve by media ID for remote display. Downloads need not be byte-identical to staged LINE bytes; Google can omit location metadata.
 - [OAuth web server flow](https://developers.google.com/identity/protocols/oauth2/web-server) and [refresh-token expiration](https://developers.google.com/identity/protocols/oauth2#expiration): invalid_grant needs owner reauthorization.
 - [API policies](https://developers.google.com/photos/support/api-policy): personal media only. Do not use this integration as a general-purpose Photos substitute, enterprise asset repository, public host or CDN.
