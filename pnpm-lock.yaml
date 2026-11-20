@@ -104,11 +104,7 @@ importers:
         specifier: ^4.1.12
         version: 4.1.12(@types/node@24.19.2)(vite@7.3.8(@types/node@24.19.2)(jiti@2.7.0)(lightningcss@1.33.0)(tsx@4.23.15)(yaml@2.9.1))
 
-  apps/api: {}
-
   apps/web: {}
-
-  apps/worker: {}
 
   packages/database: {}
 

@@ -8,8 +8,8 @@
     "migrate": "prisma migrate deploy",
     "typecheck": "tsc --noEmit",
     "build": "vite build apps/web",
-    "api": "tsx apps/api/main.ts",
-    "worker": "tsx apps/worker/main.ts",
+    "api": "go run ./cmd/rivosnap api",
+    "worker": "go run ./cmd/rivosnap worker",
     "test": "vitest run",
     "e2e": "playwright test"
   },

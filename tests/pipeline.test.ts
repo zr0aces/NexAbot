@@ -24,9 +24,9 @@ test.skipIf(!process.env["GALLERY_INTEGRATION"])(
     });
     const { db } = await import("../packages/database"),
       { clearAccessCache } = await import("../packages/database/connections"),
-      { build } = await import("../apps/api/server"),
-      { processEvent, resolveAlbum } = await import("../apps/worker/process"),
-      { cleanup } = await import("../apps/worker/maintenance"),
+      { build } = await import("../_archive/api/server"),
+      { processEvent, resolveAlbum } = await import("../_archive/worker/process"),
+      { cleanup } = await import("../_archive/worker/maintenance"),
       { scopes } = await import("../packages/google-photos"),
       { pathFor } = await import("../packages/image-processing");
     const app = await build();
@@ -413,7 +413,7 @@ test.skipIf(!process.env["GALLERY_INTEGRATION"])(
       expect(remoteRange.headers["content-range"]).toBe("bytes 0-6/100");
       expect(remoteRange.body).toBe("partial");
       const { Queue, Worker } = await import("bullmq"),
-        { dispatch } = await import("../apps/worker/dispatch");
+        { dispatch } = await import("../_archive/worker/dispatch");
       const connection = { url: process.env["REDIS_URL"] },
         q = new Queue("recovery-test", { connection });
       mode = "throttle";

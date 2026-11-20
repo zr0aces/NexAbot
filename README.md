@@ -17,6 +17,8 @@ Start with the [plan index](docs/plans/README.md) to find or propose work. Claud
 
 The [versioning policy](AGENTS.md#versioning) specifies Bangkok-calendar CalVer for application releases. Root `VERSION` is authoritative. Validate it with `node scripts/sync-version.mjs --check`. To prepare the next version, run `node scripts/release.mjs`; this does not publish, tag or build. Use `node scripts/release.mjs --help` for explicit version, build and local tag options. The version in the OpenAPI document identifies the API contract, not an application release.
 
+The former TypeScript API and worker are preserved in `_archive/api/` and `_archive/worker/` for compatibility testing. Neither is deployed.
+
 Go 1.26+ (for the `api` and `worker` services in `cmd/rivosnap` and `internal/*`) and Node 24 LTS + pnpm 10 via Corepack (for `apps/web`, E2E tests, and version scripts). Run from the repository root:
 
 ```sh
