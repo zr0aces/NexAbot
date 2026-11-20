@@ -2,11 +2,17 @@
 
 **Upgrading an existing installation?** Before running Compose, set `COMPOSE_PROJECT_NAME` in the deployment environment to the existing project name (shown by `docker compose ls`). The new default is `rivosnap`; changing the project name selects different volumes and can start an empty database. Keep the original environment and volumes.
 
-Copy **this entire directory** from the desired release to a fresh Linux host, for example as `/opt/rivosnap`. It includes a standalone `compose.yml` with release-pinned image tags (each published release also updates the `:latest` tag on GHCR) and an `env.example`. No other repository files, source checkout, or build tools are needed. The host needs Docker Engine, Compose v2, and an existing HTTPS reverse proxy.
+Copy **this entire directory** to a fresh Linux host, for example as `/opt/rivosnap`. It includes a standalone `compose.yml` tracking the `:latest` GHCR release images (or pin a specific `:<VERSION>` tag if desired) and an `env.example`. No other repository files, source checkout, or build tools are needed. The host needs Docker Engine, Compose v2, and an existing HTTPS reverse proxy.
 
 1. Confirm the publisher provides the three GHCR package names in `compose.yml` for your host architecture, using the tags shown in that file. Change the example package paths if necessary. For private packages, sign in to `ghcr.io` with a read-only package credential using `docker login --password-stdin`.
-2. From the copied directory, run `install -m 600 env.example .env` **once**, before adding secrets. Set the lowercase `GHCR_OWNER`, public HTTPS `APP_URL` (no trailing slash), and the host’s `LAN_IP`. Fill the four secret fields with independent random values. Keep the encryption key backed up separately. Configure provider credentials for the integrations you use.
-3. Forward HTTPS from the proxy to the loopback or trusted LAN listener on `WEB_PORT` (default 8068). Do not expose that HTTP port directly to the internet. Register the Google callback at `APP_URL/api/v1/google/callback`.
+2. From the copied directory, run `install -m 600 env.example .env` **once**, before adding secrets. Set the lowercase `GHCR_OWNER` (default `zr0aces`), public HTTPS `APP_URL` (must start with `https://`, no trailing slash), and the host’s `LAN_IP` (must exist on the host network interface, or set `0.0.0.0`).
+3. Generate the four required secrets with `openssl rand -hex 32` (one 64-character hex string per field):
+   - `POSTGRES_PASSWORD`: URL-safe hex password interpolated into `DATABASE_URL`
+   - `SESSION_SECRET`: at least 32 characters
+   - `TOKEN_ENCRYPTION_KEY`: **must be exact 64 hex characters** (`/^[a-fA-F0-9]{64}$/`) for AES-256-GCM; keep backed up separately
+   - `BOOTSTRAP_SECRET`: at least 24 characters (used once to claim the owner account)
+4. Configure `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` if using Google Photos OAuth (`LINE_CHANNEL_ACCESS_TOKEN` and `LINE_CHANNEL_SECRET` can also be saved later in the web UI under **Settings**).
+5. Forward HTTPS from the proxy to the loopback or trusted LAN listener on `WEB_PORT` (default 8068). Do not expose that HTTP port directly to the internet. Register the Google callback at `APP_URL/api/v1/google/callback`.
 
 Run from that directory in one shell:
 
@@ -17,6 +23,8 @@ docker compose -f compose.yml pull
 docker compose -f compose.yml up -d --no-build --wait
 docker compose -f compose.yml ps
 ```
+
+If `rivosnap-api-1` fails its healthcheck on first boot, inspect `docker compose -f compose.yml logs --tail 50 api`. Any `.env` edit requires `docker compose -f compose.yml up -d` (not `docker compose restart`, which does not reload `.env`). If you change `POSTGRES_PASSWORD` after the `postgres` volume was already initialized with a different password, either restore the original `POSTGRES_PASSWORD` or remove the empty volume before retrying.
 
 Sign in through your HTTPS URL and confirm the sidebar version matches the image tag. To inspect the embedded release, run `docker compose exec web cat /app/VERSION` (also available in `api` and `worker`). No host version file or release variable is required.
 
