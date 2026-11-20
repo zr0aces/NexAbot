@@ -1,0 +1,130 @@
+name: nexabot
+
+x-node: &node
+  restart: unless-stopped
+  init: true
+  environment:
+    DATABASE_URL: "${DATABASE_URL:-}"
+    REDIS_URL: "${REDIS_URL:-}"
+    APP_URL: "${APP_URL:-}"
+    SESSION_SECRET: "${SESSION_SECRET:-}"
+    TOKEN_ENCRYPTION_KEY: "${TOKEN_ENCRYPTION_KEY:-}"
+    BOOTSTRAP_SECRET: "${BOOTSTRAP_SECRET:-}"
+    GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"
+    GOOGLE_CLIENT_SECRET: "${GOOGLE_CLIENT_SECRET:-}"
+    GOOGLE_REDIRECT_URI: "${GOOGLE_REDIRECT_URI:-}"
+    LINE_CHANNEL_ACCESS_TOKEN: "${LINE_CHANNEL_ACCESS_TOKEN:-}"
+    LINE_CHANNEL_SECRET: "${LINE_CHANNEL_SECRET:-}"
+    NODE_ENV: ${NODE_ENV:-production}
+    TZ: Asia/Bangkok
+    MIN_FREE_MB: ${MIN_FREE_MB:-1024}
+    MAX_IMAGE_SIZE_MB: ${MAX_IMAGE_SIZE_MB:-50}
+    STAGING_PATH: /data/staging
+    THUMBNAIL_PATH: /data/thumbnails
+    STAGING_RETENTION_HOURS: ${STAGING_RETENTION_HOURS:-24}
+    FAILED_RETENTION_DAYS: ${FAILED_RETENTION_DAYS:-7}
+    THUMBNAIL_RETENTION_DAYS: ${THUMBNAIL_RETENTION_DAYS:-30}
+  networks: [private, outbound]
+  volumes: [staging:/data/staging, thumbnails:/data/thumbnails]
+  security_opt: [no-new-privileges:true]
+  mem_limit: 768m
+
+services:
+  postgres:
+    image: postgres:18
+    user: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gallery
+      POSTGRES_DB: gallery
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}"
+      TZ: Asia/Bangkok
+    volumes: [postgres:/var/lib/postgresql]
+    networks: [private]
+    healthcheck:
+      test: [CMD, pg_isready, -U, gallery]
+      interval: 5s
+      timeout: 4s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    user: redis
+    restart: unless-stopped
+    command: [redis-server, --appendonly, "yes", --maxmemory-policy, noeviction]
+    volumes: [redis:/data]
+    networks: [private]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+
+  api:
+    <<: *node
+    build: {context: ., dockerfile: Dockerfile.api}
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://localhost:3000/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 6
+
+  worker:
+    <<: *node
+    build: {context: ., dockerfile: Dockerfile.worker}
+    depends_on: &api_ready
+      api: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, node, --input-type=module, -e, "import Redis from 'ioredis';const r=new Redis(process.env['REDIS_URL']);process.exit(await r.exists('worker:heartbeat')?0:1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        NGINX_IMAGE: nginxinc/nginx-unprivileged:stable-alpine
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8068}:8080"
+      - "192.168.8.70:${WEB_PORT:-8068}:8080"
+    networks: [outbound]
+    restart: unless-stopped
+    depends_on: *api_ready
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:8080/api/v1/auth/status"]
+      interval: 15s
+      timeout: 4s
+      retries: 3
+
+  caddy:
+    build: {context: ., dockerfile: infra/caddy/Dockerfile}
+    profiles: [edge]
+    environment: {APP_URL: "${APP_URL}"}
+    ports: ["80:80","443:443"]
+    sysctls: {net.ipv4.ip_unprivileged_port_start: "0"}
+    networks: [outbound]
+    volumes: [caddy_data:/data,caddy_config:/config]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 4s
+      retries: 3
+
+networks:
+  private: {internal: true}
+  outbound: {}
+
+volumes:
+  postgres: {}
+  redis: {}
+  thumbnails: {}
+  staging: {}
+  caddy_data: {}
+  caddy_config: {}

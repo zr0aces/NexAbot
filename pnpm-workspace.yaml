@@ -1,0 +1,13 @@
+packages:
+  - apps/*
+  - packages/*
+onlyBuiltDependencies:
+  - '@prisma/client'
+  - '@prisma/engines'
+  - prisma
+  - argon2
+  - esbuild
+  - sharp
+
+overrides:
+  "@prisma/config>deepmerge-ts": "^8.0.0"

@@ -1,0 +1,17 @@
+**
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.json
+!apps/
+!apps/**
+!packages/
+!packages/**
+!infra/
+!infra/**
+!Caddyfile
+**/node_modules
+**/dist
+**/*.log
+**/*.pem
+**/*.key
