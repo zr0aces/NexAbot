@@ -2,7 +2,7 @@
 
 **Upgrading an existing installation?** Before running Compose, set `COMPOSE_PROJECT_NAME` in the deployment environment to the existing project name (shown by `docker compose ls`). The new default is `rivosnap`; changing the project name selects different volumes and can start an empty database. Keep the original environment and volumes.
 
-Publishing a GitHub Release tagged `v<root VERSION>` triggers the release workflow. It builds Linux/amd64 images for the API, worker, and web services and pushes them to `ghcr.io/<owner>/rivosnap-{api,worker,web}:<VERSION>`. Draft releases and tag pushes alone do not publish images.
+Publishing a GitHub Release tagged `v<root VERSION>` triggers the release workflow. It builds Linux/amd64 images for the API, worker, and web services and pushes them to `ghcr.io/<owner>/rivosnap-{api,worker,web}:<VERSION>` and `:latest`. Draft releases and tag pushes alone do not publish images.
 
 To run published GHCR images on another server without a local build, see the [image deployment example](example-deploy/README.md).
 
