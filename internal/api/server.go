@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path"
@@ -83,13 +84,36 @@ func NewServer(env config.Env, database *db.DB, rdb *redis.Client, store *media.
 	}
 }
 
-// Trust the socket peer, not client-supplied forwarding headers.
+// peerHost returns the socket peer address without the port.
 func peerHost(addr string) string {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return addr
 	}
 	return host
+}
+
+// clientHost returns the real client address. X-Real-IP is honoured only from a
+// loopback or private peer (the Nginx proxy), which overwrites it on every request.
+func clientHost(r *http.Request) string {
+	peer := peerHost(r.RemoteAddr)
+	if pa, err := netip.ParseAddr(peer); err == nil && (pa.IsLoopback() || pa.IsPrivate()) {
+		if ip, err := netip.ParseAddr(r.Header.Get("X-Real-IP")); err == nil {
+			return ip.String()
+		}
+	}
+	return peer
+}
+
+// rateKey picks the general rate-limit bucket for a request.
+func rateKey(r *http.Request, sid string) string {
+	if r.URL.Path == "/api/webhooks/line" {
+		return "webhook:" + clientHost(r)
+	}
+	if sid != "" {
+		return "session:" + sid
+	}
+	return "ip:" + clientHost(r)
 }
 
 func (s *Server) checkRate(bucket map[string]rateEntry, key string, max int, window time.Duration) bool {
@@ -329,17 +353,7 @@ func (s *Server) Handler() http.Handler {
 
 		urlPath := r.URL.Path
 		sid := s.sid(r)
-		rateKey := "ip:" + peerHost(r.RemoteAddr)
-		if urlPath == "/api/webhooks/line" {
-			sig := r.Header.Get("X-Line-Signature")
-			if sig == "" {
-				sig = peerHost(r.RemoteAddr)
-			}
-			rateKey = "webhook:" + sig
-		} else if sid != "" {
-			rateKey = "session:" + sid
-		}
-		if !s.checkRate(s.rateMap, rateKey, 600, time.Minute) {
+		if !s.checkRate(s.rateMap, rateKey(r, sid), 600, time.Minute) {
 			writeJSON(w, 429, map[string]string{"error": "Too many requests. Try again later."})
 			return
 		}
@@ -393,7 +407,7 @@ func newSPAHandler(dist fs.FS) http.Handler {
 
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request, mode string) {
 	ctx := r.Context()
-	if !s.checkRate(s.authRates, mode+":"+peerHost(r.RemoteAddr), 8, 5*time.Minute) {
+	if !s.checkRate(s.authRates, mode+":"+clientHost(r), 8, 5*time.Minute) {
 		writeJSON(w, 429, map[string]string{"error": "Too many requests. Try again later."})
 		return
 	}
