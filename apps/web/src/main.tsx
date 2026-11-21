@@ -222,7 +222,11 @@ function App() {
       "/auth/status",
     ),
     qc = useQueryClient();
-  const stats = query<Stats>("/dashboard/stats").data;
+  // Gated on auth: api() reloads the page on a 401, which would loop on the login screen.
+  const stats = query<Stats>(
+    "/dashboard/stats",
+    auth.data?.authenticated === true,
+  ).data;
 
   if (auth.error)
     return (

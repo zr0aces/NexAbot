@@ -40,11 +40,12 @@ export async function api<T>(
   if (!isJson) throw Error("Unexpected response.");
   return data;
 }
-export const query = <T>(p: string) =>
+export const query = <T>(p: string, enabled = true) =>
   useQuery<T>({
     queryKey: [p],
     queryFn: () => api<T>(p),
     refetchInterval: 15000,
+    enabled,
   });
 export interface Photo {
   id: string;

@@ -71,3 +71,29 @@ test("deployed owner session and health", async ({ page }) => {
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
 });
+
+test("logged-out load shows the login form without a reload loop", async ({
+  page,
+}) => {
+  let statsRequests = 0;
+  let navigations = 0;
+  page.on("framenavigated", (f) => {
+    if (f === page.mainFrame() && f.url().startsWith("http")) navigations++;
+  });
+  await page.route("**/api/v1/**", async (r) => {
+    const path = new URL(r.request().url()).pathname;
+    if (path.endsWith("auth/status"))
+      return r.fulfill({ json: { setup: false, authenticated: false } });
+    if (path.endsWith("dashboard/stats")) statsRequests++;
+    await r.fulfill({ status: 401, json: { error: "Unauthorized" } });
+  });
+  await page.goto("/");
+  await expect(page.locator("form")).toBeVisible();
+  // Vite may reload once after cold dependency optimisation; only count navigations once settled.
+  await page.waitForLoadState("networkidle");
+  navigations = 0;
+  await page.waitForTimeout(2000);
+  await expect(page.locator("form")).toBeVisible();
+  expect(statsRequests).toBe(0);
+  expect(navigations).toBe(0);
+});
