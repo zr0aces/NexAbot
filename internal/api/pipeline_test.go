@@ -1140,3 +1140,95 @@ func TestResolveAlbumRequeuesGroup(t *testing.T) {
 		t.Errorf("audit requeued = %q (err %v), want 3", requeued, err)
 	}
 }
+
+// Guards the /groups latest-image fields: newest image wins per group, none yields images: [].
+func TestGroupsLatestImage(t *testing.T) {
+	srv := integrationServer(t)
+	ctx, database := srv.ctx, srv.db
+	base := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+	seedGroup := func(name string) (gid, lineGroupID string) {
+		gid, lineGroupID = uuid.NewString(), name+"-"+uuid.NewString()
+		if _, err := database.Pool.Exec(ctx, `INSERT INTO "LineGroup" ("id", "lineGroupId", "enabled", "membershipAt", "lastEventAt", "updatedAt") VALUES ($1, $2, true, NOW(), $3, NOW())`, gid, lineGroupID, base); err != nil {
+			t.Fatalf("seed group: %v", err)
+		}
+		return gid, lineGroupID
+	}
+	seedImage := func(lineGroupID string, ts time.Time, status string) string {
+		id := uuid.NewString()
+		if _, err := database.Pool.Exec(ctx, `INSERT INTO "Image" ("id", "lineGroupId", "channelId", "lineMessageId", "lineEventTimestamp", "uploadStatus", "updatedAt") VALUES ($1, $2, 'channel', $3, $4, $5::"UploadState", NOW())`, id, lineGroupID, uuid.NewString(), ts, status); err != nil {
+			t.Fatalf("seed image: %v", err)
+		}
+		return id
+	}
+	gidA, lgA := seedGroup("a")
+	gidB, lgB := seedGroup("b")
+	gidC, _ := seedGroup("c")
+	seedImage(lgA, base.Add(-time.Hour), "FAILED")
+	newestA := seedImage(lgA, base.Add(time.Hour), "UPLOAD_PENDING")
+	newestB := seedImage(lgB, base.Add(30*time.Minute), "STAGED")
+	seedImage(lgB, base.Add(-2*time.Hour), "UPLOAD_PENDING")
+
+	type group struct {
+		ID     string               `json:"id"`
+		Count  struct{ Images int } `json:"_count"`
+		Images []struct {
+			ID                 string `json:"id"`
+			LineEventTimestamp string `json:"lineEventTimestamp"`
+			UploadStatus       string `json:"uploadStatus"`
+		} `json:"images"`
+	}
+	get := func(path string, out any) {
+		t.Helper()
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Cookie", "session="+srv.session)
+		rec := httptest.NewRecorder()
+		srv.handler.ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("GET %s: %d %s", path, rec.Code, rec.Body.String())
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {
+			t.Fatalf("decode %s: %v", path, err)
+		}
+	}
+	want := map[string]struct {
+		count    int
+		id       string
+		ts, stat string
+	}{
+		gidA: {2, newestA, "2026-03-01T11:00:00.000Z", "UPLOAD_PENDING"},
+		gidB: {2, newestB, "2026-03-01T10:30:00.000Z", "STAGED"},
+		gidC: {0, "", "", ""},
+	}
+	check := func(g group) {
+		t.Helper()
+		w, ok := want[g.ID]
+		if !ok {
+			t.Fatalf("unexpected group %s", g.ID)
+		}
+		if g.Count.Images != w.count {
+			t.Errorf("%s: count %d, want %d", g.ID, g.Count.Images, w.count)
+		}
+		if w.id == "" {
+			if g.Images == nil || len(g.Images) != 0 {
+				t.Errorf("%s: images = %v, want []", g.ID, g.Images)
+			}
+			return
+		}
+		if len(g.Images) != 1 || g.Images[0].ID != w.id || g.Images[0].LineEventTimestamp != w.ts || g.Images[0].UploadStatus != w.stat {
+			t.Errorf("%s: images = %+v, want id=%s ts=%s status=%s", g.ID, g.Images, w.id, w.ts, w.stat)
+		}
+	}
+	var list []group
+	get("/api/v1/groups", &list)
+	if len(list) != 3 {
+		t.Fatalf("got %d groups, want 3", len(list))
+	}
+	for _, g := range list {
+		check(g)
+	}
+	for gid := range want {
+		var one group
+		get("/api/v1/groups/"+gid, &one)
+		check(one)
+	}
+}

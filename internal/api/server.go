@@ -883,36 +883,32 @@ func (s *Server) handleGoogleDisconnect(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-func (s *Server) fetchGroupMap(ctx context.Context, row pgx.Row) (map[string]any, error) {
+func (s *Server) fetchGroupMap(row pgx.Row) (map[string]any, error) {
 	var id, lineGroupID, membershipStatus string
 	var displayName, googleAlbumID *string
 	var enabled, albumCreating bool
 	var enabledSince *time.Time
 	var membershipAt, lastEventAt, createdAt, updatedAt time.Time
 	var imageCount int
+	var imgID, imgStatus *string
+	var imgTS *time.Time
 
 	err := row.Scan(
 		&id, &lineGroupID, &displayName, &enabled, &membershipStatus,
 		&enabledSince, &membershipAt, &googleAlbumID, &albumCreating,
 		&lastEventAt, &createdAt, &updatedAt, &imageCount,
+		&imgID, &imgTS, &imgStatus,
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	images := make([]map[string]any, 0, 1)
-	var imgID, imgStatus string
-	var imgTS time.Time
-	err = s.DB.Pool.QueryRow(
-		ctx,
-		`SELECT "id", "lineEventTimestamp", "uploadStatus"::text FROM "Image" WHERE "lineGroupId" = $1 ORDER BY "lineEventTimestamp" DESC LIMIT 1`,
-		lineGroupID,
-	).Scan(&imgID, &imgTS, &imgStatus)
-	if err == nil {
+	if imgID != nil && imgTS != nil && imgStatus != nil {
 		images = append(images, map[string]any{
-			"id":                 imgID,
-			"lineEventTimestamp": fmtTime(imgTS),
-			"uploadStatus":       imgStatus,
+			"id":                 *imgID,
+			"lineEventTimestamp": fmtTime(*imgTS),
+			"uploadStatus":       *imgStatus,
 		})
 	}
 
@@ -941,8 +937,13 @@ func (s *Server) handleGetGroups(w http.ResponseWriter, r *http.Request) {
 		`SELECT g."id", g."lineGroupId", g."displayName", g."enabled", g."membershipStatus",
 		        g."enabledSince", g."membershipAt", g."googleAlbumId", g."albumCreating",
 		        g."lastEventAt", g."createdAt", g."updatedAt",
-		        (SELECT COUNT(*) FROM "Image" i WHERE i."lineGroupId" = g."lineGroupId")
+		        (SELECT COUNT(*) FROM "Image" i WHERE i."lineGroupId" = g."lineGroupId"),
+		        li."id", li."lineEventTimestamp", li."uploadStatus"
 		 FROM "LineGroup" g
+		 LEFT JOIN LATERAL (
+		        SELECT "id", "lineEventTimestamp", "uploadStatus"::text AS "uploadStatus" FROM "Image"
+		        WHERE "lineGroupId" = g."lineGroupId" ORDER BY "lineEventTimestamp" DESC LIMIT 1
+		 ) li ON true
 		 ORDER BY g."lastEventAt" DESC`,
 	)
 	if err != nil {
@@ -952,7 +953,7 @@ func (s *Server) handleGetGroups(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	result := make([]map[string]any, 0)
 	for rows.Next() {
-		m, err := s.fetchGroupMap(ctx, rows)
+		m, err := s.fetchGroupMap(rows)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -974,11 +975,17 @@ func (s *Server) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 		`SELECT g."id", g."lineGroupId", g."displayName", g."enabled", g."membershipStatus",
 		        g."enabledSince", g."membershipAt", g."googleAlbumId", g."albumCreating",
 		        g."lastEventAt", g."createdAt", g."updatedAt",
-		        (SELECT COUNT(*) FROM "Image" i WHERE i."lineGroupId" = g."lineGroupId")
-		 FROM "LineGroup" g WHERE g."id" = $1`,
+		        (SELECT COUNT(*) FROM "Image" i WHERE i."lineGroupId" = g."lineGroupId"),
+		        li."id", li."lineEventTimestamp", li."uploadStatus"
+		 FROM "LineGroup" g
+		 LEFT JOIN LATERAL (
+		        SELECT "id", "lineEventTimestamp", "uploadStatus"::text AS "uploadStatus" FROM "Image"
+		        WHERE "lineGroupId" = g."lineGroupId" ORDER BY "lineEventTimestamp" DESC LIMIT 1
+		 ) li ON true
+		 WHERE g."id" = $1`,
 		gid,
 	)
-	m, err := s.fetchGroupMap(ctx, row)
+	m, err := s.fetchGroupMap(row)
 	if err != nil {
 		writeErr(w, err)
 		return
