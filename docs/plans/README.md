@@ -4,7 +4,7 @@ Add a link under **Active** when a plan is created; move it to **Completed** whe
 
 ## Active
 
-None.
+- [Audit 2 Remediation (AUD2-001 to AUD2-012)](2026-11-21-audit2-remediation.md) — Fix all findings from the 2026-11-21 audit, starting with the UTC session-timezone ingestion blackout.
 
 ## Completed
 
