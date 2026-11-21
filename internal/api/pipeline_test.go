@@ -449,8 +449,8 @@ func TestFullPipelineIntegration(t *testing.T) {
 	if res := doReq("GET", cbURL, headers, nil); res.Code != 302 {
 		t.Fatalf("expected 302 on OAuth callback, got %d: %s", res.Code, res.Body.String())
 	}
-	if res := doReq("GET", cbURL, headers, nil); res.Code != 403 {
-		t.Fatalf("expected 403 on replayed OAuth state, got %d", res.Code)
+	if res := doReq("GET", cbURL, headers, nil); res.Code != 302 || res.Header().Get("Location") != "/settings?google_error=state" {
+		t.Fatalf("expected state-error redirect on replayed OAuth state, got %d %q", res.Code, res.Header().Get("Location"))
 	}
 
 	runNextOutbox := func() {
@@ -885,6 +885,7 @@ type integrationEnv struct {
 	handler http.Handler
 	session string
 	dir     string
+	env     config.Env
 }
 
 // integrationServer builds an API server on the disposable Postgres/Redis, resets state and signs the owner in.
@@ -953,7 +954,7 @@ func integrationServer(t *testing.T) integrationEnv {
 	if session == "" {
 		t.Fatal("missing session cookie on setup")
 	}
-	return integrationEnv{ctx, database, store, handler, session, temp}
+	return integrationEnv{ctx, database, store, handler, session, temp, env}
 }
 
 func thumbnailFixture(t *testing.T) (get func(ctx context.Context, id string) *httptest.ResponseRecorder, seed func() string, ffmpegLog string) {
@@ -1273,5 +1274,103 @@ func TestGroupsLatestImage(t *testing.T) {
 		var one group
 		get("/api/v1/groups/"+gid, &one)
 		check(one)
+	}
+}
+
+// closedPoolHandler serves the API on a second, already-closed pool so every DB call fails,
+// while the shared pool and Redis session stay usable.
+func closedPoolHandler(t *testing.T, srv integrationEnv) http.Handler {
+	t.Helper()
+	second, err := db.Connect(srv.ctx, srv.env)
+	if err != nil {
+		t.Fatalf("db.Connect: %v", err)
+	}
+	second.Close()
+	rOpts, err := redis.ParseURL(srv.env.RedisURL)
+	if err != nil {
+		t.Fatalf("redis.ParseURL: %v", err)
+	}
+	rdb := redis.NewClient(rOpts)
+	t.Cleanup(func() { _ = rdb.Close() })
+	return api.NewServer(srv.env, second, rdb, srv.store).Handler()
+}
+
+func apiRequest(handler http.Handler, method, path, body, session string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Origin", "http://localhost")
+	req.Header.Set("X-Gallery-Request", "1")
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if session != "" {
+		req.AddCookie(&http.Cookie{Name: "session", Value: session})
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestLoginDatabaseErrorIs500Not401(t *testing.T) {
+	srv := integrationServer(t)
+	h := closedPoolHandler(t, srv)
+	rec := apiRequest(h, "POST", "/api/v1/auth/login", `{"email":"owner@example.org","password":"long-fixture-password"}`, "")
+	if rec.Code != 500 {
+		t.Fatalf("expected 500 on DB error, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLoginWrongPasswordIs401(t *testing.T) {
+	srv := integrationServer(t)
+	rec := apiRequest(srv.handler, "POST", "/api/v1/auth/login", `{"email":"owner@example.org","password":"wrong-password"}`, "")
+	if rec.Code != 401 {
+		t.Fatalf("expected 401 for wrong password, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDashboardStatsDatabaseErrorIs500(t *testing.T) {
+	srv := integrationServer(t)
+	h := closedPoolHandler(t, srv)
+	rec := apiRequest(h, "GET", "/api/v1/dashboard/stats", "", srv.session)
+	if rec.Code != 500 {
+		t.Fatalf("expected 500 on DB error, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDashboardStatsCounts(t *testing.T) {
+	srv := integrationServer(t)
+	rec := apiRequest(srv.handler, "GET", "/api/v1/dashboard/stats", "", srv.session)
+	if rec.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["total"] != float64(0) || out["failed"] != float64(0) || out["pending"] != float64(0) {
+		t.Fatalf("unexpected stats on empty db: %v", out)
+	}
+}
+
+func TestGoogleCallbackBadStateRedirectsToSettings(t *testing.T) {
+	srv := integrationServer(t)
+	rec := apiRequest(srv.handler, "GET", "/api/v1/google/callback?code=c&state=short", "", srv.session)
+	if rec.Code != 302 || rec.Header().Get("Location") != "/settings?google_error=state" {
+		t.Fatalf("expected 302 to /settings?google_error=state, got %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestHealthFlagsUndecryptableLineCredentials(t *testing.T) {
+	srv := integrationServer(t)
+	if _, err := srv.db.Pool.Exec(srv.ctx, `UPDATE "Owner" SET settings = '{"lineToken":"not-ciphertext"}'::jsonb WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	rec := apiRequest(srv.handler, "GET", "/api/v1/health", "", srv.session)
+	if rec.Code != 200 {
+		t.Fatalf("health %d: %s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if out["lineCredentials"] != "Undecryptable" {
+		t.Fatalf("expected lineCredentials Undecryptable, got %v", out)
 	}
 }

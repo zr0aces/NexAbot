@@ -28,12 +28,16 @@ export async function api<T>(
     },
     body: body ? JSON.stringify(body) : undefined,
   });
-  const data = await r.json();
+  const isJson = (r.headers.get("content-type") ?? "").includes(
+    "application/json",
+  );
+  const data = isJson ? await r.json() : undefined;
   if (!r.ok) {
     if (r.status === 401 && !path.startsWith("/auth/"))
       window.location.assign("/");
-    throw Error(data.error ?? "Request failed.");
+    throw Error(data?.error ?? "Request failed.");
   }
+  if (!isJson) throw Error("Unexpected response.");
   return data;
 }
 export const query = <T>(p: string) =>

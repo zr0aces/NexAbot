@@ -473,8 +473,18 @@ export function Groups({ albums = false }: { albums?: boolean }) {
   );
 }
 
+const googleErrors: Record<string, string> = {
+  state: "Google sign-in expired or was invalid. Start the connection again.",
+  denied: "Google consent was declined. Start the connection again.",
+  scopes:
+    "Grant all requested Google Photos permissions and offline access, then connect again.",
+  exchange: "Google connection failed. Try again.",
+};
+
 export function Settings() {
-  const q = query<Prefs>("/settings"),
+  const [sp] = useSearchParams(),
+    googleError = sp.get("google_error"),
+    q = query<Prefs>("/settings"),
     google = query<{ status: string; lastError?: string }>("/google/status"),
     action = useAction(),
     [editingLine, setEditingLine] = useState(false);
@@ -514,6 +524,11 @@ export function Settings() {
         title="Settings"
         sub="Control where group media arrives, what gets saved, and how long copies stay local."
       />
+      {googleError && (
+        <p role="alert">
+          {googleErrors[googleError] ?? googleErrors.exchange}
+        </p>
+      )}
       <p role="status" aria-live="polite">
         {action.msg}
       </p>

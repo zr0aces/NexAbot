@@ -500,12 +500,12 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request, mode string)
 	} else {
 		var email, passwordHash string
 		err := s.DB.Pool.QueryRow(ctx, `SELECT "email", "passwordHash" FROM "Owner" WHERE id = 1`).Scan(&email, &passwordHash)
-		if errors.Is(err, pgx.ErrNoRows) || !crypto.VerifyPassword(passwordHash, b.Password) || email != b.Email {
-			writeJSON(w, 401, map[string]string{"error": "Email or password is incorrect."})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			writeErr(w, err)
 			return
 		}
-		if err != nil {
-			writeErr(w, err)
+		if err != nil || !crypto.VerifyPassword(passwordHash, b.Password) || email != b.Email {
+			writeJSON(w, 401, map[string]string{"error": "Email or password is incorrect."})
 			return
 		}
 	}
@@ -555,12 +555,20 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{
+	if _, err := s.DB.LineCredentials(ctx); err != nil {
+		writeErr(w, err)
+		return
+	}
+	out := map[string]any{
 		"database":     "Online",
 		"redis":        pong,
 		"worker":       workerState,
 		"diskPressure": pressured,
-	})
+	}
+	if s.DB.LineCredentialsUndecryptable() {
+		out["lineCredentials"] = "Undecryptable"
+	}
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -695,7 +703,10 @@ func (s *Server) handlePostSettingsLine(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var mismatchCount int
-	_ = s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "Image" WHERE "channelId" <> $1`, info.UserID).Scan(&mismatchCount)
+	if err := s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "Image" WHERE "channelId" <> $1`, info.UserID).Scan(&mismatchCount); err != nil {
+		writeErr(w, err)
+		return
+	}
 	if (existing.Destination != "" && existing.Destination != info.UserID) || mismatchCount > 0 {
 		writeErr(w, model.NewFault("CHANNEL", "Use the original LINE channel.", false, 0))
 		return
@@ -775,19 +786,22 @@ func (s *Server) handleGoogleConnect(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	fail := func(code string) {
+		http.Redirect(w, r, "/settings?google_error="+code, http.StatusFound)
+	}
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
 	if len(state) != 64 {
-		writeErr(w, errBadRequest("Invalid request. Check the submitted values."))
+		fail("state")
 		return
 	}
 	storedSid, err := s.Redis.GetDel(ctx, "oauth:"+state).Result()
 	if err != nil || storedSid != s.sid(r) {
-		writeJSON(w, 403, map[string]string{"error": "OAuth state expired or invalid."})
+		fail("state")
 		return
 	}
 	if code == "" {
-		writeErr(w, model.NewFault("GOOGLE_AUTH", "Consent declined. Start connection again.", false, 0))
+		fail("denied")
 		return
 	}
 	t, err := google.Token(ctx, s.Env, map[string]string{
@@ -796,7 +810,7 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		"grant_type":   "authorization_code",
 	})
 	if err != nil {
-		writeErr(w, err)
+		fail("exchange")
 		return
 	}
 	granted := strings.Split(t.Scope, " ")
@@ -808,11 +822,11 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if t.RefreshToken == "" || !allScopes {
-		writeErr(w, model.NewFault("GOOGLE_SCOPES", "Grant all requested Google Photos permissions and offline access.", false, 0))
+		fail("scopes")
 		return
 	}
 	if err := google.Validate(ctx, t.AccessToken); err != nil {
-		writeErr(w, err)
+		fail("exchange")
 		return
 	}
 	var mappedAlbumID *string
@@ -825,7 +839,7 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	encRef, err := crypto.Seal(t.RefreshToken, s.Env.TokenEncryptionKey)
 	if err != nil {
-		writeErr(w, err)
+		fail("exchange")
 		return
 	}
 	if _, err := s.DB.Pool.Exec(
@@ -840,7 +854,7 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		     "lastError" = NULL`,
 		encRef, t.Scope,
 	); err != nil {
-		writeErr(w, err)
+		fail("exchange")
 		return
 	}
 	s.DB.ClearAccessCache()
@@ -1927,18 +1941,22 @@ func (s *Server) handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var total, synced, failed, pending, groups, warnings int
-	_ = s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "Image"`).Scan(&total)
-	_ = s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "Image" WHERE "uploadStatus" = 'SYNCED'::"UploadState"`).Scan(&synced)
-	_ = s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "Image" WHERE "uploadStatus" IN ('FAILED'::"UploadState", 'NEEDS_REVIEW'::"UploadState", 'UNRECOVERABLE'::"UploadState")`).Scan(&failed)
-	_ = s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "Image" WHERE "uploadStatus" NOT IN ('SYNCED'::"UploadState", 'NEEDS_REVIEW'::"UploadState", 'FAILED'::"UploadState", 'UNRECOVERABLE'::"UploadState")`).Scan(&pending)
-	_ = s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "LineGroup" WHERE "enabled" = true`).Scan(&groups)
-
 	warnCutoff := time.Now().UTC().Add(-time.Duration(policy.FailedDays-1) * 24 * time.Hour)
-	_ = s.DB.Pool.QueryRow(
+	if err := s.DB.Pool.QueryRow(
 		ctx,
-		`SELECT COUNT(*) FROM "Image" WHERE "uploadStatus" <> 'SYNCED'::"UploadState" AND "stagingPath" IS NOT NULL AND "createdAt" <= $1`,
+		`SELECT
+		   COUNT(*),
+		   COUNT(*) FILTER (WHERE "uploadStatus" = 'SYNCED'::"UploadState"),
+		   COUNT(*) FILTER (WHERE "uploadStatus" IN ('FAILED'::"UploadState", 'NEEDS_REVIEW'::"UploadState", 'UNRECOVERABLE'::"UploadState")),
+		   COUNT(*) FILTER (WHERE "uploadStatus" NOT IN ('SYNCED'::"UploadState", 'NEEDS_REVIEW'::"UploadState", 'FAILED'::"UploadState", 'UNRECOVERABLE'::"UploadState")),
+		   COUNT(*) FILTER (WHERE "uploadStatus" <> 'SYNCED'::"UploadState" AND "stagingPath" IS NOT NULL AND "createdAt" <= $1),
+		   (SELECT COUNT(*) FROM "LineGroup" WHERE "enabled" = true)
+		 FROM "Image"`,
 		warnCutoff,
-	).Scan(&warnings)
+	).Scan(&total, &synced, &failed, &pending, &warnings, &groups); err != nil {
+		writeErr(w, err)
+		return
+	}
 
 	var oldest *time.Time
 	_ = s.DB.Pool.QueryRow(
