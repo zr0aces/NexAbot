@@ -231,6 +231,25 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 	if err := p.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "UploadAttempt" WHERE "imageId" = $1`, id).Scan(&count); err != nil {
 		return err
 	}
+	// Attempts never completed belong to runs that were killed (OOM) or cancelled; cap the loop.
+	var open int
+	if err := p.DB.Pool.QueryRow(
+		ctx,
+		`SELECT COUNT(*) FROM "UploadAttempt" WHERE "imageId" = $1 AND "status" = 'ACTIVE' AND "completedAt" IS NULL`,
+		id,
+	).Scan(&open); err != nil {
+		return err
+	}
+	crashLoop := open >= 3
+	if crashLoop {
+		if _, err := p.DB.Pool.Exec(
+			ctx,
+			`UPDATE "UploadAttempt" SET "status" = 'ABANDONED', "completedAt" = NOW() WHERE "imageId" = $1 AND "status" = 'ACTIVE' AND "completedAt" IS NULL`,
+			id,
+		); err != nil {
+			return err
+		}
+	}
 	n := count + 1
 	attemptID := uuid.NewString()
 	if _, err := p.DB.Pool.Exec(
@@ -321,7 +340,9 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 		return nil
 	}
 
-	runErr := func() error {
+	// Set when Stage kept undecodable bytes, so the owner can review or discard them.
+	var quarantinePath *string
+	run := func() error {
 		g, err := p.loadGroupByLineID(ctx, i.LineGroupID)
 		if err != nil {
 			return err
@@ -403,6 +424,9 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 					defer resp.Body.Close()
 					staged, err = p.Store.Stage(ctx, id, resp.Body, mediaKind)
 					if err != nil {
+						if staged.StagingPath != "" {
+							quarantinePath = &staged.StagingPath
+						}
 						return err
 					}
 				}
@@ -552,8 +576,14 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 			return err
 		}
 		return tx.Commit(ctx)
-	}()
+	}
 
+	var runErr error
+	if crashLoop {
+		runErr = model.NewFault("WORKER_INTERRUPTED", "Processing was interrupted repeatedly. Check worker memory and logs before retrying.", false, 0)
+	} else {
+		runErr = run()
+	}
 	if runErr == nil {
 		return nil
 	}
@@ -596,9 +626,10 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 	if _, err := tx.Exec(
 		ctx,
 		`UPDATE "Image"
-		 SET "uploadStatus" = $1::"UploadState", "lastError" = $2, "errorCode" = $3, "updatedAt" = NOW()
+		 SET "uploadStatus" = $1::"UploadState", "lastError" = $2, "errorCode" = $3,
+		     "stagingPath" = COALESCE($6, "stagingPath"), "updatedAt" = NOW()
 		 WHERE id = $4 AND "uploadStatus" = $5::"UploadState"`,
-		string(next), f.Message, f.Code, id, string(i.UploadStatus),
+		string(next), f.Message, f.Code, id, string(i.UploadStatus), quarantinePath,
 	); err != nil {
 		return err
 	}

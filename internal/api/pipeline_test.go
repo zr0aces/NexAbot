@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
 	"rivosnap/internal/api"
@@ -597,6 +598,27 @@ func TestFullPipelineIntegration(t *testing.T) {
 	if vidMediaType != "VIDEO" || vidStatus != "UNRECOVERABLE" || vidErrCode != "UNSUPPORTED_VIDEO" {
 		t.Fatalf("unexpected bad-video state: %s %s %s", vidMediaType, vidStatus, vidErrCode)
 	}
+	badImg := mkEvent("message", "bad-image", "image", "group")
+	badImg["message"] = map[string]any{"type": "image", "id": "bad-image"}
+	sendWebhook([]map[string]any{badImg}, true)
+	runNextOutbox()
+	// Undecodable originals are quarantined for owner review, never silently deleted.
+	for _, msgID := range []string{"bad-video", "bad-image"} {
+		var status string
+		var keptPath *string
+		if err := database.Pool.QueryRow(
+			ctx,
+			`SELECT "uploadStatus"::text, "stagingPath" FROM "Image" WHERE "lineMessageId" = $1`, msgID,
+		).Scan(&status, &keptPath); err != nil {
+			t.Fatalf("query %s: %v", msgID, err)
+		}
+		if status != "UNRECOVERABLE" || keptPath == nil {
+			t.Fatalf("%s: expected UNRECOVERABLE with stagingPath, got %s %v", msgID, status, keptPath)
+		}
+		if _, err := os.Stat(*keptPath); err != nil {
+			t.Fatalf("%s: quarantined original missing: %v", msgID, err)
+		}
+	}
 
 	_, _ = database.Pool.Exec(ctx, `UPDATE "Image" SET "mediaType" = 'VIDEO', "mimeType" = 'video/mp4' WHERE id = $1`, stagedID)
 	rangeRes := doReq("GET", "/api/v1/images/"+stagedID+"/content", map[string]string{
@@ -682,4 +704,95 @@ func TestFullPipelineIntegration(t *testing.T) {
 		t.Fatal("no heartbeat renewal while outbox claim blocked")
 	})
 
+}
+
+func crashLoopFixture(t *testing.T, state string) (*db.DB, *worker.Processor, string, string) {
+	t.Helper()
+	if os.Getenv("GALLERY_INTEGRATION") == "" {
+		t.Skip("skipping integration test; set GALLERY_INTEGRATION=1")
+	}
+	temp := t.TempDir()
+	env := config.Env{
+		DatabaseURL:    os.Getenv("DATABASE_URL"),
+		StagingPath:    filepath.Join(temp, "stage"),
+		ThumbnailPath:  filepath.Join(temp, "thumb"),
+		MaxImageSizeMB: 50,
+		MaxVideoSizeMB: 200,
+		MinFreeMB:      1,
+	}
+	ctx := context.Background()
+	database, err := db.Connect(ctx, env)
+	if err != nil {
+		t.Fatalf("db.Connect: %v", err)
+	}
+	t.Cleanup(database.Close)
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+	store := media.NewStore(env)
+	if err := store.InitDirs(); err != nil {
+		t.Fatal(err)
+	}
+	lineGroupID := "crash-" + uuid.NewString()
+	imageID := uuid.NewString()
+	outboxID := uuid.NewString()
+	stmts := []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO "LineGroup" ("id", "lineGroupId", "enabled", "membershipAt", "lastEventAt", "updatedAt") VALUES ($1, $2, true, NOW(), NOW(), NOW())`, []any{uuid.NewString(), lineGroupID}},
+		{`INSERT INTO "Image" ("id", "lineGroupId", "channelId", "lineMessageId", "lineEventTimestamp", "uploadStatus", "updatedAt") VALUES ($1, $2, 'channel', $3, NOW(), $4::"UploadState", NOW())`, []any{imageID, lineGroupID, uuid.NewString(), state}},
+		{`INSERT INTO "OutboxEvent" ("id", "eventType", "aggregateId", "payload", "createdAt", "availableAt") VALUES ($1, 'PROCESS', $2, '{}'::jsonb, NOW(), NOW())`, []any{outboxID, imageID}},
+	}
+	for n := 1; n <= 3; n++ {
+		stmts = append(stmts, struct {
+			sql  string
+			args []any
+		}{`INSERT INTO "UploadAttempt" ("id", "imageId", "attemptNumber", "status", "startedAt") VALUES ($1, $2, $3, 'ACTIVE', NOW())`, []any{uuid.NewString(), imageID, n}})
+	}
+	for _, st := range stmts {
+		if _, err := database.Pool.Exec(ctx, st.sql, st.args...); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	return database, &worker.Processor{DB: database, Store: store}, imageID, outboxID
+}
+
+func assertCrashLoopStopped(t *testing.T, state, wantStatus string) {
+	ctx := context.Background()
+	database, proc, imageID, outboxID := crashLoopFixture(t, state)
+	if err := proc.ProcessEvent(ctx, outboxID); err != nil {
+		t.Fatalf("ProcessEvent: %v", err)
+	}
+	var status, code string
+	if err := database.Pool.QueryRow(ctx, `SELECT "uploadStatus"::text, "errorCode" FROM "Image" WHERE id = $1`, imageID).Scan(&status, &code); err != nil {
+		t.Fatal(err)
+	}
+	if status != wantStatus || code != "WORKER_INTERRUPTED" {
+		t.Fatalf("expected %s/WORKER_INTERRUPTED, got %s/%s", wantStatus, status, code)
+	}
+	var abandoned, open, outbox int
+	if err := database.Pool.QueryRow(ctx, `SELECT
+		COUNT(*) FILTER (WHERE "status" = 'ABANDONED' AND "completedAt" IS NOT NULL),
+		COUNT(*) FILTER (WHERE "completedAt" IS NULL)
+		FROM "UploadAttempt" WHERE "imageId" = $1`, imageID).Scan(&abandoned, &open); err != nil {
+		t.Fatal(err)
+	}
+	if abandoned != 3 || open != 0 {
+		t.Fatalf("expected 3 abandoned and 0 open attempts, got %d and %d", abandoned, open)
+	}
+	if err := database.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "OutboxEvent" WHERE "aggregateId" = $1`, imageID).Scan(&outbox); err != nil {
+		t.Fatal(err)
+	}
+	if outbox != 0 {
+		t.Fatalf("crash loop left %d outbox events", outbox)
+	}
+}
+
+func TestCrashLoopEndsInFailed(t *testing.T) {
+	assertCrashLoopStopped(t, "DOWNLOAD_PENDING", "FAILED")
+}
+
+func TestCrashLoopInCreatingMediaGoesToReview(t *testing.T) {
+	assertCrashLoopStopped(t, "CREATING_MEDIA", "NEEDS_REVIEW")
 }
