@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"rivosnap/internal/httpclient"
+	"rivosnap/internal/model"
 )
 
 func Signed(body []byte, signature, secret string) bool {
@@ -116,7 +117,18 @@ func Call(ctx context.Context, path, token string, data bool, timeout time.Durat
 }
 
 func Download(ctx context.Context, id, token string) (*http.Response, error) {
-	return Call(ctx, "message/"+url.PathEscape(id)+"/content", token, true, 600*time.Second)
+	resp, err := Call(ctx, "message/"+url.PathEscape(id)+"/content", token, true, 600*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusAccepted {
+			return nil, model.NewFault("LINE_PREPARING", "LINE is still preparing this content.", true, 0)
+		}
+		return nil, model.NewFault("LINE_DOWNLOAD", "Unexpected LINE content response.", true, 0)
+	}
+	return resp, nil
 }
 
 var ctrlCharsRe = regexp.MustCompile(`[\x00-\x1f\x7f]`)

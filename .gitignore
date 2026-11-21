@@ -3,6 +3,9 @@
 !.env.example
 node_modules/
 dist/
+!/internal/web/dist/
+/internal/web/dist/*
+!/internal/web/dist/.keep
 test-results/
 playwright-report/
 docker-compose.override.yml

@@ -97,3 +97,21 @@ test("logged-out load shows the login form without a reload loop", async ({
   expect(statsRequests).toBe(0);
   expect(navigations).toBe(0);
 });
+
+test("sign-out failure stays visible and allows retry", async ({ page }) => {
+  let attempts = 0;
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/auth/status"))
+      return route.fulfill({ json: { setup: false, authenticated: attempts < 2 } });
+    if (path.endsWith("/auth/logout") && ++attempts === 1)
+      return route.fulfill({ status: 500, json: { error: "Revocation failed" } });
+    return route.fulfill({ json: {} });
+  });
+  await page.goto("/health");
+  const button = page.getByRole("button", { name: "Sign out", exact: true });
+  await button.click();
+  await expect(page.getByRole("alert")).toContainText("Sign-out could not be confirmed");
+  await button.click();
+  await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
+});
