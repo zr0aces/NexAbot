@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"os"
@@ -195,23 +194,12 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 	if eventType == "GROUP_SUMMARY" {
 		creds, err := p.DB.LineCredentials(ctx)
 		if err == nil && creds.Token != "" {
-			resp, err := line.Call(ctx, "group/"+aggregateID+"/summary", creds.Token, false, 90*time.Second)
-			if err == nil {
-				var info struct {
-					GroupName string `json:"groupName"`
-				}
-				if json.NewDecoder(resp.Body).Decode(&info) == nil && info.GroupName != "" {
-					runes := []rune(info.GroupName)
-					if len(runes) > 500 {
-						runes = runes[:500]
-					}
-					_, _ = p.DB.Pool.Exec(
-						ctx,
-						`UPDATE "LineGroup" SET "displayName" = $1, "updatedAt" = NOW() WHERE "lineGroupId" = $2`,
-						string(runes), aggregateID,
-					)
-				}
-				resp.Body.Close()
+			if name, err := line.GroupName(ctx, creds.Token, aggregateID); err == nil && name != "" {
+				_, _ = p.DB.Pool.Exec(
+					ctx,
+					`UPDATE "LineGroup" SET "displayName" = $1, "updatedAt" = NOW() WHERE "lineGroupId" = $2`,
+					name, aggregateID,
+				)
 			}
 		}
 		return deleteOutbox()
@@ -230,6 +218,25 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 	var count int
 	if err := p.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "UploadAttempt" WHERE "imageId" = $1`, id).Scan(&count); err != nil {
 		return err
+	}
+	// Attempts never completed belong to runs that were killed (OOM) or cancelled; cap the loop.
+	var open int
+	if err := p.DB.Pool.QueryRow(
+		ctx,
+		`SELECT COUNT(*) FROM "UploadAttempt" WHERE "imageId" = $1 AND "status" = 'ACTIVE' AND "completedAt" IS NULL`,
+		id,
+	).Scan(&open); err != nil {
+		return err
+	}
+	crashLoop := open >= 3
+	if crashLoop {
+		if _, err := p.DB.Pool.Exec(
+			ctx,
+			`UPDATE "UploadAttempt" SET "status" = 'ABANDONED', "completedAt" = NOW() WHERE "imageId" = $1 AND "status" = 'ACTIVE' AND "completedAt" IS NULL`,
+			id,
+		); err != nil {
+			return err
+		}
 	}
 	n := count + 1
 	attemptID := uuid.NewString()
@@ -321,7 +328,9 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 		return nil
 	}
 
-	runErr := func() error {
+	// Set when Stage kept undecodable bytes, so the owner can review or discard them.
+	var quarantinePath *string
+	run := func() error {
 		g, err := p.loadGroupByLineID(ctx, i.LineGroupID)
 		if err != nil {
 			return err
@@ -381,6 +390,7 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 						staged, err = media.Inspect(path)
 					}
 					if err != nil {
+						quarantinePath = &path
 						return err
 					}
 					staged.StagingPath = path
@@ -403,6 +413,9 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 					defer resp.Body.Close()
 					staged, err = p.Store.Stage(ctx, id, resp.Body, mediaKind)
 					if err != nil {
+						if staged.StagingPath != "" {
+							quarantinePath = &staged.StagingPath
+						}
 						return err
 					}
 				}
@@ -476,20 +489,9 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 				if g.DisplayName == nil || *g.DisplayName == "" {
 					creds, err := p.DB.LineCredentials(ctx)
 					if err == nil && creds.Token != "" {
-						if resp, err := line.Call(ctx, "group/"+g.LineGroupID+"/summary", creds.Token, false, 90*time.Second); err == nil {
-							var summary struct {
-								GroupName string `json:"groupName"`
-							}
-							if json.NewDecoder(resp.Body).Decode(&summary) == nil && summary.GroupName != "" {
-								runes := []rune(summary.GroupName)
-								if len(runes) > 500 {
-									runes = runes[:500]
-								}
-								s := string(runes)
-								_, _ = p.DB.Pool.Exec(ctx, `UPDATE "LineGroup" SET "displayName" = $1, "updatedAt" = NOW() WHERE id = $2`, s, g.ID)
-								g.DisplayName = &s
-							}
-							resp.Body.Close()
+						if name, err := line.GroupName(ctx, creds.Token, g.LineGroupID); err == nil && name != "" {
+							_, _ = p.DB.Pool.Exec(ctx, `UPDATE "LineGroup" SET "displayName" = $1, "updatedAt" = NOW() WHERE id = $2`, name, g.ID)
+							g.DisplayName = &name
 						}
 					}
 				}
@@ -552,8 +554,20 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 			return err
 		}
 		return tx.Commit(ctx)
-	}()
+	}
 
+	var runErr error
+	if crashLoop {
+		// A kill between Stage's rename and the failure commit leaves the file unreferenced.
+		if path, err := p.Store.PathFor(id, 0); err == nil {
+			if _, statErr := os.Stat(path); statErr == nil {
+				quarantinePath = &path
+			}
+		}
+		runErr = model.NewFault("WORKER_INTERRUPTED", "Processing was interrupted repeatedly. Check worker memory and logs before retrying.", false, 0)
+	} else {
+		runErr = run()
+	}
 	if runErr == nil {
 		return nil
 	}
@@ -596,9 +610,10 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 	if _, err := tx.Exec(
 		ctx,
 		`UPDATE "Image"
-		 SET "uploadStatus" = $1::"UploadState", "lastError" = $2, "errorCode" = $3, "updatedAt" = NOW()
+		 SET "uploadStatus" = $1::"UploadState", "lastError" = $2, "errorCode" = $3,
+		     "stagingPath" = COALESCE($6, "stagingPath"), "updatedAt" = NOW()
 		 WHERE id = $4 AND "uploadStatus" = $5::"UploadState"`,
-		string(next), f.Message, f.Code, id, string(i.UploadStatus),
+		string(next), f.Message, f.Code, id, string(i.UploadStatus), quarantinePath,
 	); err != nil {
 		return err
 	}
@@ -612,7 +627,7 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 		return err
 	}
 	if next == model.StateRetryPending {
-		avail := time.Now().Add(time.Duration(model.Backoff(n, f.Delay)) * time.Millisecond)
+		avail := time.Now().UTC().Add(time.Duration(model.Backoff(n, f.Delay)) * time.Millisecond)
 		if _, err := tx.Exec(
 			ctx,
 			`INSERT INTO "OutboxEvent" ("id", "eventType", "aggregateId", "payload", "createdAt", "availableAt")
@@ -707,6 +722,11 @@ func (p *Processor) Cleanup(ctx context.Context, now time.Time) error {
 
 	webhookCutoff := now.Add(-90 * 24 * time.Hour)
 	_, _ = p.DB.Pool.Exec(ctx, `DELETE FROM "WebhookEvent" WHERE "receivedAt" < $1`, webhookCutoff)
+	attemptCutoff := now.Add(-90 * 24 * time.Hour)
+	_, _ = p.DB.Pool.Exec(ctx, `DELETE FROM "UploadAttempt" a USING "Image" i
+		WHERE a."imageId" = i.id AND i."uploadStatus" = 'SYNCED'::"UploadState" AND a."startedAt" < $1`, attemptCutoff)
+	auditCutoff := now.Add(-365 * 24 * time.Hour)
+	_, _ = p.DB.Pool.Exec(ctx, `DELETE FROM "AuditLog" WHERE "createdAt" < $1`, auditCutoff)
 	p.Store.ClearUsageCache()
 	return nil
 }
@@ -729,6 +749,9 @@ func (p *Processor) dispatch(ctx context.Context, conn *pgx.Conn) error {
 		}
 		if err := p.ProcessEvent(ctx, id); err != nil {
 			return err
+		}
+		if p.Redis != nil {
+			_ = p.Redis.Set(ctx, "worker:lastProgress", time.Now().UTC().Format(time.RFC3339Nano), 0).Err()
 		}
 	}
 	return nil

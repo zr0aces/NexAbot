@@ -14,7 +14,13 @@
 
 ## Line references
 
-`file:line` references are from `6a19bb0`. Locate each site by the function named next to it, because an uncommitted change in the worktree moves `internal/api/server.go` by about 30 lines. That change makes the API serve the SPA (`internal/web/`, `newSPAHandler`), turns Nginx into a pure proxy (`location /`), and drops `Dockerfile.web`. The `server.go` functions referenced are:
+`file:line` references are from `6a19bb0`. Locate each site by the function named next to it, because commit `3175d1d` moves `internal/api/server.go` by about 30 lines. That commit also:
+- makes the API serve the SPA (`internal/web/`, `newSPAHandler`);
+- runs stock `nginxinc/nginx-unprivileged` as a pure proxy (`location /`), with `infra/docker/web.conf` mounted and copied to `docs/example-deploy/web.conf`;
+- deletes `Dockerfile.web`;
+- publishes `web` on `${WEB_PORT:-8080}:8080` on all host interfaces.
+
+The `server.go` functions referenced are:
 
 | Line | Function |
 |---|---|
@@ -117,6 +123,7 @@ This task is an operator runbook that runs during the Task 1 deploy window (see 
 
   The outbox columns must be repaired. Without that, after the fix the worker's `"availableAt" <= NOW()` and `"publishedAt" < NOW() - interval '1 minute'` checks in `dispatch` see these rows as 7 hours in the future, so pending and in-flight work stalls for up to 7 hours.
 - Columns never to touch, because they come from LINE or from UTC Go values: `Image."lineEventTimestamp"`, `LineGroup."membershipAt"`, `"lastEventAt"`.
+- The script starts with `SET LOCAL timezone = 'UTC'` inside its transaction. The `psql` session would otherwise inherit the server's `Asia/Bangkok`, and the script's own `NOW()` writes would come out 7 hours ahead.
 - Idempotency: the script runs in one transaction. It aborts with `RAISE EXCEPTION` if an `AuditLog` row with action `'UTC timestamp repair'` already exists, and inserts that row when it finishes.
 
 - [ ] **Step 1:** Write the script as decided above. Start it with a `SELECT` preview that counts the rows affected per column.
@@ -154,7 +161,8 @@ This task is an operator runbook that runs during the Task 1 deploy window (see 
 ### Task 4: Per-client rate limiting behind Nginx (AUD2-002)
 
 **Files:**
-- Modify: `infra/docker/web.conf` (the `location` block that proxies to `$gallery_api`: `/api/` at `6a19bb0`, `/` after the uncommitted SPA change)
+- Modify: `infra/docker/web.conf` and `docs/example-deploy/web.conf` (identical; the `location /` block that proxies to `$gallery_api`). Keep the two files identical.
+- Modify: `docs/DOCKER_DEPLOYMENT.md:21`. Replace "The API does not trust client-supplied forwarded addresses" with the new trust rule. Add that an external Nginx must send `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`. Caddy sends it by default. Without it, every visitor shares the proxy host's bucket: no worse than today, but not fixed.
 - Modify: `internal/api/server.go` (`peerHost`, the `Handler` middleware key selection, `handleAuth`)
 - Test: `internal/api/rate_test.go`
 
@@ -165,7 +173,7 @@ This task is an operator runbook that runs during the Task 1 deploy window (see 
 
 **Decisions:**
 - Nginx trusts forwarding from private ranges only: `set_real_ip_from 10.0.0.0/8; set_real_ip_from 172.16.0.0/12; set_real_ip_from 192.168.0.0/16; set_real_ip_from 127.0.0.0/8; real_ip_header X-Forwarded-For; real_ip_recursive on;`. In the proxy location, add `proxy_set_header X-Real-IP $remote_addr;` and keep clearing `X-Forwarded-For`. Nginx overwrites `X-Real-IP` on every request, and the API publishes no host port, so a client cannot inject the header directly.
-- Accepted residual risk: a LAN client hitting `192.168.8.70:WEB_PORT` directly can spoof its own key. That only bypasses its own limit.
+- Accepted residual risk: `web` is published on `WEB_PORT` on all interfaces. Any client that reaches it directly from a private address, or through Docker's loopback userland proxy, can set its own key through `X-Forwarded-For`. That only bypasses its own limit. Clients connecting directly from public addresses keep their real IP, because Docker DNAT preserves the source address. The host firewall should still keep `WEB_PORT` off the internet, as `docs/DOCKER_DEPLOYMENT.md` already implies.
 - `rateKey` returns:
   - `"webhook:" + clientHost(r)` for the webhook. The signature is no longer used as a key.
   - `"session:" + sid` when there is a session.
@@ -186,7 +194,7 @@ This task is an operator runbook that runs during the Task 1 deploy window (see 
   rtk proxy docker run --rm -v "$PWD/infra/docker/web.conf:/etc/nginx/conf.d/default.conf:ro" <web image> nginx -t
   ```
 
-  Use `Dockerfile.web`'s build output instead if the SPA change has not landed. Expected: `syntax is ok`.
+  `<web image>` is the image Compose uses for `web`: `nginxinc/nginx-unprivileged:stable-alpine`, or the pinned tag once Task 13 has landed. Expected: `syntax is ok`. The directive set was already proven with this exact command during plan review.
 - [ ] **Step 5:** Update the rate-limit paragraph in `docs/SECURITY.md`. Commit `fix(api): key rate limits on real client address`.
 
 ### Task 5: Bounded staging inspection, quarantine instead of delete, crash-loop cap (AUD2-003)
@@ -204,7 +212,8 @@ This task is an operator runbook that runs during the Task 1 deploy window (see 
   - New fault code `WORKER_INTERRUPTED`, non-retryable.
 
 **Decisions:**
-- **Crash-loop cap.** Before inserting the new attempt, count this image's `UploadAttempt` rows with `status = 'ACTIVE' AND "completedAt" IS NULL`. Every normal path completes its attempt (`worker.go:417`, `:541`, `:608`), so only killed runs leave such rows.
+- **Crash-loop cap.** Before inserting the new attempt, count this image's `UploadAttempt` rows with `status = 'ACTIVE' AND "completedAt" IS NULL`. Every normal path completes its attempt (`worker.go:417`, `:541`, `:608`). Uncompleted rows come from killed runs (OOM), from runs cancelled by SIGTERM (deploys and restarts), and from rare exits at the `return` statements after the failure-path transition (`:581-589`).
+  - Accepted false positive: an item whose processing spans 3 restarts ends in `FAILED` with `WORKER_INTERRUPTED`, and the owner can Retry it. A threshold of 3 keeps a real OOM loop to about 3 minutes.
   - If the count is 3 or more, mark those rows `status = 'ABANDONED'` and set `completedAt`.
   - Then insert the new attempt as usual. Instead of invoking the `runErr := func() error {...}()` closure (`:324`), set `runErr` to the `WORKER_INTERRUPTED` fault (non-transient).
   - The existing classification at `:565-578` then sends `CREATING_MEDIA`/`NEEDS_REVIEW` items to `NEEDS_REVIEW` (reconcile, never re-upload) and everything else to `FAILED`. Do not bypass it.
@@ -233,13 +242,17 @@ This task is an operator runbook that runs during the Task 1 deploy window (see 
 
 **Decisions:**
 - `Server` gets `thumbSem chan struct{}` (capacity 2) and `thumbFlight singleflight.Group`, keyed `id + ":" + strconv.Itoa(size)`. Acquire the semaphore inside the `singleflight` function, so callers for the same key share one result and one slot.
-- If the semaphore is not free immediately (`select` with `default`), the function returns a sentinel error that the handler maps to `503` with `Retry-After: 5`.
+- Wait for a semaphore slot with `select` on the slot, `r.Context().Done()` and `time.After(20 * time.Second)`. On timeout, the function returns a sentinel error that the handler maps to `503` with `Retry-After: 5`.
+  - Do not reject immediately. A queue page loads up to 36 `<img>` thumbnails at once, and `<img>` does not retry, so an immediate 503 would leave most of them broken.
+  - Waiting requests hold no `ffmpeg` process, so CPU and memory stay bounded at 2 decoders.
 - On a cache hit, call `media.Touch(path)` so thumbnails the owner is viewing are not evicted by age. Do not change cleanup logic.
 
-- [ ] **Step 1:** Write `TestThumbnailConcurrencyBounded`. A stub `ffmpeg` sleeps 500 ms and appends to a counter file. Ten parallel requests for distinct ids give at most 2 concurrent stub runs, and the rest return 503 with `Retry-After`. Ten parallel requests for the same id produce exactly one stub run.
-- [ ] **Step 2:** Run it. Expected: FAIL.
+- [ ] **Step 1:** Write `TestThumbnailConcurrencyBounded`. A stub `ffmpeg` records its start and end in a log file, sleeps 500 ms, and writes the output file. Seed staged, non-synced items with no cached thumbnail.
+  - Ten parallel requests for distinct ids all return 200, and the log never shows more than 2 overlapping runs.
+  - Ten parallel requests for one new id produce exactly one stub run, and all ten return 200.
+- [ ] **Step 2:** Run `rtk bash scripts/test-integration.sh` (the test is integration-gated). Expected: the new test FAILs.
 - [ ] **Step 3:** Implement as decided.
-- [ ] **Step 4:** Run `rtk go test ./internal/api`. Expected: PASS.
+- [ ] **Step 4:** Run `rtk bash scripts/test-integration.sh`. The test is integration-gated, so a plain `go test` would skip it. Expected: PASS.
 - [ ] **Step 5:** Commit `fix(api): bound on-demand thumbnail generation`.
 
 ### Task 7: Resolve-album re-queues the group's blocked images (AUD2-005)
@@ -251,12 +264,21 @@ This task is an operator runbook that runs during the Task 1 deploy window (see 
 - Test: `internal/api/pipeline_test.go`
 
 **Decisions:**
-- Inside the existing transaction, after the `LineGroup` update, run one `UPDATE "Image" SET "uploadStatus" = 'RETRY_PENDING', "updatedAt" = NOW() WHERE "lineGroupId" = (SELECT "lineGroupId" FROM "LineGroup" WHERE id = $1) AND "uploadStatus" = 'FAILED' AND "errorCode" = 'ALBUM_REVIEW' RETURNING id`.
-- Then run one `INSERT INTO "OutboxEvent" ... SELECT` that creates a `PROCESS` row for each returned id. This mirrors `handleRetryJob` at `server.go:1785-1835`.
+- Inside the existing transaction, after the `LineGroup` update, run one statement. It mirrors `handleRetryJob` (`server.go:1769-1837`) for the whole group, and `n` is `cmd.RowsAffected()`:
+
+  ```sql
+  WITH r AS (
+    UPDATE "Image" SET "uploadStatus" = 'RETRY_PENDING'::"UploadState", "updatedAt" = NOW()
+    WHERE "lineGroupId" = (SELECT "lineGroupId" FROM "LineGroup" WHERE id = $1)
+      AND "uploadStatus" = 'FAILED'::"UploadState" AND "errorCode" = 'ALBUM_REVIEW'
+    RETURNING id)
+  INSERT INTO "OutboxEvent" ("id", "eventType", "aggregateId", "payload", "createdAt", "availableAt")
+  SELECT gen_random_uuid()::text, 'PROCESS', id, '{}'::jsonb, NOW(), NOW() FROM r
+  ```
 - Put the count in the audit metadata as `{"requeued": n}`. The response becomes `{"ok": true, "requeued": n}`. This is additive, so update the inline OpenAPI document in `server.go` without a version bump.
 
 - [ ] **Step 1:** Write `TestResolveAlbumRequeuesGroup`. Seed group A with 3 `FAILED/ALBUM_REVIEW` images and 1 `FAILED/GOOGLE_STORAGE` image, and group B with 1 `FAILED/ALBUM_REVIEW` image. Resolve A. Assert: A's 3 `ALBUM_REVIEW` images are `RETRY_PENDING` with one outbox row each; A's `GOOGLE_STORAGE` image and B's image are unchanged; the response has `requeued` = 3.
-- [ ] **Step 2:** Run it. Expected: FAIL.
+- [ ] **Step 2:** Run `rtk bash scripts/test-integration.sh` (the test is integration-gated). Expected: the new test FAILs.
 - [ ] **Step 3:** Implement. Show "N photos re-queued" in the existing resolve success message, with i18n keys in both locales.
 - [ ] **Step 4:** Run `rtk bash scripts/test-integration.sh`, `rtk corepack pnpm typecheck` and `rtk corepack pnpm build`. Expected: PASS.
 - [ ] **Step 5:** Commit `fix(api): re-queue album-blocked images on resolve`.
@@ -271,8 +293,12 @@ This task is an operator runbook that runs during the Task 1 deploy window (see 
 **Decisions:**
 - `ci.yml` triggers on `pull_request`, `push` to `main`, and `workflow_call`. It has three jobs:
   - `go`: `setup-go` with an exact `go-version`: the newest `1.27.x` patch at execution time, at least `1.27.4`. Task 13 pins the `golang` builder image to the same patch, and the two must be updated together from then on. Do not use `go-version-file`: `go.mod` says `go 1.26.0`, and `govulncheck` would then report standard-library vulnerabilities fixed in the shipped toolchain. Run `go vet ./...`, `test -z "$(gofmt -l cmd internal packages)"`, `go test ./...`, and `go run golang.org/x/vuln/cmd/govulncheck@<pinned release tag> ./...`. Look the tag up at execution time; do not use `@latest`.
-  - `web`: Node 24, `corepack pnpm install --frozen-lockfile`, `typecheck`, `build`, `node --test scripts/version-control.test.mjs`, `node scripts/sync-version.mjs --check`.
-  - `integration`: `sudo apt-get install -y ffmpeg` (which provides `ffprobe`), then `bash scripts/test-integration.sh`. Docker is available on `ubuntu-24.04`, the runner `release-images.yml` already uses.
+  - `web`: `setup-node` with Node 24, `corepack enable` (pnpm comes from `packageManager: pnpm@10.33.0`), `corepack pnpm install --frozen-lockfile`, `corepack pnpm typecheck`, `corepack pnpm build`, `node --test scripts/version-control.test.mjs`, `node scripts/sync-version.mjs --check`.
+  - `integration`: the same `setup-go` step as `go`, then `sudo apt-get install -y ffmpeg` (which provides `ffprobe`), then `bash scripts/test-integration.sh`. Docker is available on `ubuntu-24.04`, the runner `release-images.yml` already uses.
+- The `go` and `integration` jobs run `mkdir -p internal/web/dist && touch internal/web/dist/.keep` before any Go command.
+  - `internal/web/web.go` has `//go:embed all:dist`, and `dist/` is gitignored, so a fresh checkout does not compile without it.
+  - This is the same step the worker image build uses (`Dockerfile.worker`).
+  - At runtime the tests never need the real SPA. `web.Dist()` prefers `apps/web/dist` when present.
 - All jobs run with `permissions: contents: read`.
 - `release-images.yml` adds a job `ci: uses: ./.github/workflows/ci.yml`, and the `publish` job gets `needs: ci`.
 - Make the `migrate_test.go` comment describe what the test does now: re-running Go migrations on a Go-migrated database. Do not invent a Prisma fixture.
@@ -293,7 +319,7 @@ This task is an operator runbook that runs during the Task 1 deploy window (see 
 - `fetchGroupMap` scans those columns into nullable variables, and drops its nested `QueryRow` and its `ctx` use.
 - The existing index `Image_lineGroupId_lineEventTimestamp_idx` serves the join. The JSON shape stays the same, including `images: []` when a group has no image.
 
-- [ ] **Step 1:** Make sure a test asserts the latest-image fields for two groups with different latest images. Run it. Expected: PASS (it guards the refactor).
+- [ ] **Step 1:** Make sure a test asserts the latest-image fields for two groups with different latest images. Run `rtk bash scripts/test-integration.sh`. Expected: PASS (it guards the refactor).
 - [ ] **Step 2:** Refactor.
 - [ ] **Step 3:** Run `rtk bash scripts/test-integration.sh`. Expected: PASS.
 - [ ] **Step 4:** Commit `perf(api): load groups with one query`.
@@ -302,18 +328,18 @@ This task is an operator runbook that runs during the Task 1 deploy window (see 
 
 **Files:**
 - Modify: `internal/api/server.go:1493-1517`
-- Test: `internal/api/` unit test with `httptest`
+- Test: `internal/api/pipeline_test.go`. Extend the existing staged-video `Range` request (`rangeRes`, about `:602`), because the route needs a session and a database row.
 
 **Decisions:** Replace the manual parsing with `http.ServeContent(w, r, "", fi.ModTime(), f)`. Set `Content-Type` before the call. Keep the existing `Cache-Control` behavior.
 
-- [ ] **Step 1:** Write `TestLocalMediaRange` against a 1000-byte file:
-  - `bytes=-10` returns 206 with `Content-Range: bytes 990-999/1000` and the last 10 bytes.
-  - `bytes=5000-` returns 416.
-  - `bytes=0-9` returns 206 with 10 bytes.
-  - No `Range` header returns 200 with 1000 bytes.
-- [ ] **Step 2:** Run it. Expected: FAIL on the first two cases.
+- [ ] **Step 1:** Next to `rangeRes`, add assertions against the same staged video of size `N`, read from disk:
+  - `bytes=-10` returns 206 with `Content-Range: bytes <N-10>-<N-1>/<N>` and the file's last 10 bytes.
+  - `bytes=<N+100>-` returns 416.
+  - `bytes=0-9` returns 206 with the first 10 bytes.
+  - No `Range` header returns 200 with `N` bytes.
+- [ ] **Step 2:** Run `rtk bash scripts/test-integration.sh`. Expected: FAIL on the first two cases.
 - [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Run it. Expected: PASS.
+- [ ] **Step 4:** Run `rtk bash scripts/test-integration.sh`. Expected: PASS.
 - [ ] **Step 5:** Commit `fix(api): use http.ServeContent for local media ranges`.
 
 ### Task 11: Stop reporting failures as success (AUD2-009, plus the dashboard query from report §3)
@@ -343,7 +369,7 @@ This task is an operator runbook that runs during the Task 1 deploy window (see 
   - Login with the pool closed returns 500, not 401.
   - The dashboard with the pool closed returns 500.
   - An OAuth callback with a bad state returns 302 with `Location` `/settings?google_error=state`.
-- [ ] **Step 2:** Run them. Expected: FAIL.
+- [ ] **Step 2:** Run `rtk bash scripts/test-integration.sh`. Expected: the new tests FAIL.
 - [ ] **Step 3:** Implement all the decisions above.
 - [ ] **Step 4:** Run `rtk bash scripts/test-integration.sh`, `rtk corepack pnpm typecheck` and `rtk corepack pnpm build`. Expected: PASS.
 - [ ] **Step 5:** Commit `fix: surface database and OAuth failures instead of false success`.
@@ -363,7 +389,7 @@ This task is an operator runbook that runs during the Task 1 deploy window (see 
 
   All three call sites (`handleRefreshGroup` and the two worker blocks) replace their inline call, decode and truncate with `line.GroupName`. Each caller keeps its own error handling: the API maps errors as it does today, and the worker ignores them as it does today.
 
-- [ ] **Step 1:** Write table tests for `CleanGroupName`: control characters, tabs and newlines become spaces; plain Thai text is unchanged; 600 runes are truncated to 500. Add an `httptest` test for `GroupName` with an id containing `/`, asserting that the escaped path is requested. If `line.Call`'s base URL is not overridable, test only `CleanGroupName` and say so.
+- [ ] **Step 1:** Write table tests for `CleanGroupName`: control characters, tabs and newlines become spaces; plain Thai text is unchanged; 600 runes are truncated to 500. Add `TestGroupNameEscapesID`. `line.Call` hardcodes `https://api.line.me/v2/bot/`, so swap `http.DefaultTransport` for a `RoundTripper` stub, as `pipeline_test.go:287-289` does, and restore it with `defer`. Call `GroupName(ctx, "t", "a/b")`, and assert two things: `req.URL.EscapedPath()` is `/v2/bot/group/a%2Fb/summary`, and a stubbed `{"groupName":"x\ty"}` returns `"x y"`.
 - [ ] **Step 2:** Move the logic, and switch all three call sites.
 - [ ] **Step 3:** Run `rtk go test ./...`. Expected: PASS.
 - [ ] **Step 4:** Commit `refactor(line): share group-name sanitization between API and worker`.
@@ -371,21 +397,20 @@ This task is an operator runbook that runs during the Task 1 deploy window (see 
 ### Task 13: Pin base images (AUD2-011)
 
 **Files:**
-- Modify every floating `FROM` and `image:` that exists when this task runs:
-  - `Dockerfile.api` (including the new `node:24-bookworm-slim` web-build stage from the SPA change)
-  - `Dockerfile.worker`
-  - `Dockerfile.web`, if it still exists
-  - `infra/caddy/Dockerfile`
-  - `docker-compose.yml` (`postgres`, `redis`, and `web`'s `nginxinc/nginx-unprivileged` once it is an `image:`)
-  - `docs/example-deploy/compose.yml`
+- Modify:
+  - `Dockerfile.api` (`node:24-bookworm-slim`, `golang:1.27-alpine`, `alpine:3.21`)
+  - `Dockerfile.worker` (`golang:1.27-alpine`, `alpine:3.21`)
+  - `infra/caddy/Dockerfile` (`caddy:2-alpine`)
+  - `docker-compose.yml` (`postgres:18`, `redis:7-alpine`, `nginxinc/nginx-unprivileged:stable-alpine`)
+  - `docs/example-deploy/compose.yml` (the same three). Leave the GHCR `:latest` app images alone; they are the release channel.
 
-  Find them with `rtk grep -nE '^FROM|image:' Dockerfile.* infra docker-compose.yml docs/example-deploy/compose.yml`.
+  Find every site with `rtk grep -nE '^FROM|image:' Dockerfile.* infra/caddy/Dockerfile docker-compose.yml docs/example-deploy/compose.yml`.
 - Modify: `docs/DOCKER_DEPLOYMENT.md` (a short "updating base images" note)
 
 **Decisions:** Pin exact patch tags at execution time, looked up from the registry and never guessed: `golang:<same 1.27.x patch as CI's setup-go (Task 8)>-alpine`; the current `alpine:3.21.x`; `node:24.x.y-bookworm-slim`; `nginxinc/nginx-unprivileged:<x.y.z>-alpine`; `caddy:2.x.y-alpine`; `postgres:18.x`, keeping major 18 so the data volume stays compatible; `redis:7.x.y-alpine`. Use tags, not digests, so that a deliberate update is a one-line diff.
 
 - [ ] **Step 1:** Look up the current patch tags and apply them.
-- [ ] **Step 2:** Run `rtk docker compose --profile edge config --quiet`, then build the `api`, `worker` and `web` images locally. Expected: success. Running `go version` in the built API image prints at least `go1.27.4`.
+- [ ] **Step 2:** Run `rtk docker compose --profile edge config --quiet`, then build the `api` and `worker` images locally and pull the pinned `web` image. Expected: success. Running `go version` in the built API image prints at least `go1.27.4`.
 - [ ] **Step 3:** Commit `build: pin base image versions`.
 
 ### Task 14: Small observations (AUD2-012)
@@ -399,16 +424,16 @@ This task is an operator runbook that runs during the Task 1 deploy window (see 
 - Modify: `internal/crypto/crypto.go` (gofmt), `internal/media/media.go:70`, `internal/model/model.go:80` (ST1005)
 
 **Decisions:**
-- `http.Server`: set `ReadHeaderTimeout: 10 * time.Second` and `IdleTimeout: 120 * time.Second`. Leave `WriteTimeout` unset, because media streaming needs it unset.
+- `http.Server` (`main.go:133-136`, `httpSrv`): set `ReadHeaderTimeout: 10 * time.Second` and `IdleTimeout: 120 * time.Second`. Leave `WriteTimeout` unset, because media streaming needs it unset.
 - Wrap the Google thumbnail read in `io.LimitReader(body, 10<<20)`.
-- After `ProcessEvent` returns in `dispatch`, the worker sets the Redis key `worker:lastProgress` (UTC RFC3339Nano, no TTL). `handleHealth` adds it to its JSON as `"workerLastProgressAt"`, omitted when missing. The Health page shows it as one extra row under Worker, with i18n in both locales.
+- After `ProcessEvent` returns `nil` in `dispatch`, the worker sets the Redis key `worker:lastProgress` (UTC RFC3339Nano, no TTL). `handleHealth` adds it to its JSON as `"workerLastProgressAt"`, omitted when missing. The Health page shows it as one extra row under Worker, with i18n in both locales.
 - The Upload queue badge replaces `useQueryClient().getQueryData<Stats>(["/dashboard/stats"])` with `query<Stats>("/dashboard/stats")` from `data.ts`. It uses the same key, so it shares the dashboard's cache and its 15 s polling.
 - Retention, using the existing cleanup loop: delete `UploadAttempt` rows of `SYNCED` images older than 90 days, and `AuditLog` rows older than 365 days. Use fixed constants next to the `WebhookEvent` pruning, not new settings.
 - Make the ST1005 error strings lowercase without trailing punctuation. Only internal error strings change; user-facing `Fault` messages are untouched.
 - The gallery index and keyset pagination remain benchmark candidates (report §3). They are out of scope here; add them to `docs/plans/roadmap.md`, creating that file.
 
 - [ ] **Step 1:** Write a cleanup test: seed an old `SYNCED` image's attempts and an old `AuditLog` row, run `Cleanup`, and assert both are pruned while recent rows remain.
-- [ ] **Step 2:** Run it. Expected: FAIL.
+- [ ] **Step 2:** Run `rtk bash scripts/test-integration.sh` (the test is integration-gated). Expected: the new test FAILs.
 - [ ] **Step 3:** Implement all the decisions above.
 - [ ] **Step 4:** Run:
   - `rtk go vet ./...`

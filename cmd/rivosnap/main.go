@@ -133,6 +133,9 @@ func main() {
 	httpSrv := &http.Server{
 		Addr:    "0.0.0.0:3000",
 		Handler: srv.Handler(),
+		// WriteTimeout stays unset: media streaming holds responses open.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	errCh := make(chan error, 1)

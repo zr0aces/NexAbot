@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -21,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
 	"rivosnap/internal/api"
@@ -447,8 +449,8 @@ func TestFullPipelineIntegration(t *testing.T) {
 	if res := doReq("GET", cbURL, headers, nil); res.Code != 302 {
 		t.Fatalf("expected 302 on OAuth callback, got %d: %s", res.Code, res.Body.String())
 	}
-	if res := doReq("GET", cbURL, headers, nil); res.Code != 403 {
-		t.Fatalf("expected 403 on replayed OAuth state, got %d", res.Code)
+	if res := doReq("GET", cbURL, headers, nil); res.Code != 302 || res.Header().Get("Location") != "/settings?google_error=state" {
+		t.Fatalf("expected state-error redirect on replayed OAuth state, got %d %q", res.Code, res.Header().Get("Location"))
 	}
 
 	runNextOutbox := func() {
@@ -597,6 +599,27 @@ func TestFullPipelineIntegration(t *testing.T) {
 	if vidMediaType != "VIDEO" || vidStatus != "UNRECOVERABLE" || vidErrCode != "UNSUPPORTED_VIDEO" {
 		t.Fatalf("unexpected bad-video state: %s %s %s", vidMediaType, vidStatus, vidErrCode)
 	}
+	badImg := mkEvent("message", "bad-image", "image", "group")
+	badImg["message"] = map[string]any{"type": "image", "id": "bad-image"}
+	sendWebhook([]map[string]any{badImg}, true)
+	runNextOutbox()
+	// Undecodable originals are quarantined for owner review, never silently deleted.
+	for _, msgID := range []string{"bad-video", "bad-image"} {
+		var status string
+		var keptPath *string
+		if err := database.Pool.QueryRow(
+			ctx,
+			`SELECT "uploadStatus"::text, "stagingPath" FROM "Image" WHERE "lineMessageId" = $1`, msgID,
+		).Scan(&status, &keptPath); err != nil {
+			t.Fatalf("query %s: %v", msgID, err)
+		}
+		if status != "UNRECOVERABLE" || keptPath == nil {
+			t.Fatalf("%s: expected UNRECOVERABLE with stagingPath, got %s %v", msgID, status, keptPath)
+		}
+		if _, err := os.Stat(*keptPath); err != nil {
+			t.Fatalf("%s: quarantined original missing: %v", msgID, err)
+		}
+	}
 
 	_, _ = database.Pool.Exec(ctx, `UPDATE "Image" SET "mediaType" = 'VIDEO', "mimeType" = 'video/mp4' WHERE id = $1`, stagedID)
 	rangeRes := doReq("GET", "/api/v1/images/"+stagedID+"/content", map[string]string{
@@ -606,6 +629,48 @@ func TestFullPipelineIntegration(t *testing.T) {
 	if rangeRes.Code != 206 || rangeRes.Header().Get("Content-Range") != "bytes 0-6/100" || rangeRes.Body.String() != "partial" {
 		t.Fatalf("unexpected Range response: code=%d cr=%s body=%q", rangeRes.Code, rangeRes.Header().Get("Content-Range"), rangeRes.Body.String())
 	}
+	t.Run("local media ranges", func(t *testing.T) {
+		path, err := store.PathFor(stagedID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		data := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.Pool.Exec(ctx, `UPDATE "Image" SET "stagingPath" = $2 WHERE id = $1`, stagedID, path); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			_ = os.Remove(path)
+			_, _ = database.Pool.Exec(ctx, `UPDATE "Image" SET "stagingPath" = NULL WHERE id = $1`, stagedID)
+		}()
+		n := len(data)
+		get := func(rng string) *httptest.ResponseRecorder {
+			h := map[string]string{"Cookie": "session=" + sessionCookie}
+			if rng != "" {
+				h["Range"] = rng
+			}
+			return doReq("GET", "/api/v1/images/"+stagedID+"/content", h, nil)
+		}
+		if res := get("bytes=-10"); res.Code != 206 ||
+			res.Header().Get("Content-Range") != fmt.Sprintf("bytes %d-%d/%d", n-10, n-1, n) ||
+			res.Body.String() != string(data[n-10:]) {
+			t.Fatalf("suffix range: code=%d cr=%q body=%q", res.Code, res.Header().Get("Content-Range"), res.Body.String())
+		}
+		if res := get(fmt.Sprintf("bytes=%d-", n+100)); res.Code != 416 {
+			t.Fatalf("unsatisfiable range: expected 416, got %d", res.Code)
+		}
+		if res := get("bytes=0-9"); res.Code != 206 || res.Body.String() != string(data[:10]) {
+			t.Fatalf("first range: code=%d body=%q", res.Code, res.Body.String())
+		}
+		if res := get(""); res.Code != 200 || res.Body.Len() != n || res.Header().Get("Content-Type") != "video/mp4" {
+			t.Fatalf("full body: code=%d len=%d ct=%q", res.Code, res.Body.Len(), res.Header().Get("Content-Type"))
+		}
+	})
 	t.Run("discard retries failed unlink", func(t *testing.T) {
 		path, err := store.PathFor(stagedID, 0)
 		if err != nil {
@@ -682,4 +747,749 @@ func TestFullPipelineIntegration(t *testing.T) {
 		t.Fatal("no heartbeat renewal while outbox claim blocked")
 	})
 
+}
+
+func crashLoopFixture(t *testing.T, state string, attempts int) (*db.DB, *worker.Processor, string, string) {
+	t.Helper()
+	if os.Getenv("GALLERY_INTEGRATION") == "" {
+		t.Skip("skipping integration test; set GALLERY_INTEGRATION=1")
+	}
+	temp := t.TempDir()
+	env := config.Env{
+		DatabaseURL:    os.Getenv("DATABASE_URL"),
+		StagingPath:    filepath.Join(temp, "stage"),
+		ThumbnailPath:  filepath.Join(temp, "thumb"),
+		MaxImageSizeMB: 50,
+		MaxVideoSizeMB: 200,
+		MinFreeMB:      1,
+	}
+	ctx := context.Background()
+	database, err := db.Connect(ctx, env)
+	if err != nil {
+		t.Fatalf("db.Connect: %v", err)
+	}
+	t.Cleanup(database.Close)
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+	store := media.NewStore(env)
+	if err := store.InitDirs(); err != nil {
+		t.Fatal(err)
+	}
+	lineGroupID := "crash-" + uuid.NewString()
+	imageID := uuid.NewString()
+	outboxID := uuid.NewString()
+	stmts := []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO "LineGroup" ("id", "lineGroupId", "enabled", "membershipAt", "lastEventAt", "updatedAt") VALUES ($1, $2, true, NOW(), NOW(), NOW())`, []any{uuid.NewString(), lineGroupID}},
+		{`INSERT INTO "Image" ("id", "lineGroupId", "channelId", "lineMessageId", "lineEventTimestamp", "uploadStatus", "updatedAt") VALUES ($1, $2, 'channel', $3, NOW(), $4::"UploadState", NOW())`, []any{imageID, lineGroupID, uuid.NewString(), state}},
+		{`INSERT INTO "OutboxEvent" ("id", "eventType", "aggregateId", "payload", "createdAt", "availableAt") VALUES ($1, 'PROCESS', $2, '{}'::jsonb, NOW(), NOW())`, []any{outboxID, imageID}},
+	}
+	for n := 1; n <= attempts; n++ {
+		stmts = append(stmts, struct {
+			sql  string
+			args []any
+		}{`INSERT INTO "UploadAttempt" ("id", "imageId", "attemptNumber", "status", "startedAt") VALUES ($1, $2, $3, 'ACTIVE', NOW())`, []any{uuid.NewString(), imageID, n}})
+	}
+	for _, st := range stmts {
+		if _, err := database.Pool.Exec(ctx, st.sql, st.args...); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	return database, &worker.Processor{DB: database, Store: store}, imageID, outboxID
+}
+
+func assertCrashLoopStopped(t *testing.T, state, wantStatus string) {
+	ctx := context.Background()
+	database, proc, imageID, outboxID := crashLoopFixture(t, state, 3)
+	if err := proc.ProcessEvent(ctx, outboxID); err != nil {
+		t.Fatalf("ProcessEvent: %v", err)
+	}
+	var status, code string
+	if err := database.Pool.QueryRow(ctx, `SELECT "uploadStatus"::text, "errorCode" FROM "Image" WHERE id = $1`, imageID).Scan(&status, &code); err != nil {
+		t.Fatal(err)
+	}
+	if status != wantStatus || code != "WORKER_INTERRUPTED" {
+		t.Fatalf("expected %s/WORKER_INTERRUPTED, got %s/%s", wantStatus, status, code)
+	}
+	var abandoned, open, outbox int
+	if err := database.Pool.QueryRow(ctx, `SELECT
+		COUNT(*) FILTER (WHERE "status" = 'ABANDONED' AND "completedAt" IS NOT NULL),
+		COUNT(*) FILTER (WHERE "completedAt" IS NULL)
+		FROM "UploadAttempt" WHERE "imageId" = $1`, imageID).Scan(&abandoned, &open); err != nil {
+		t.Fatal(err)
+	}
+	if abandoned != 3 || open != 0 {
+		t.Fatalf("expected 3 abandoned and 0 open attempts, got %d and %d", abandoned, open)
+	}
+	if err := database.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "OutboxEvent" WHERE "aggregateId" = $1`, imageID).Scan(&outbox); err != nil {
+		t.Fatal(err)
+	}
+	if outbox != 0 {
+		t.Fatalf("crash loop left %d outbox events", outbox)
+	}
+}
+
+func TestCrashLoopEndsInFailed(t *testing.T) {
+	assertCrashLoopStopped(t, "DOWNLOAD_PENDING", "FAILED")
+}
+
+func TestCrashLoopInCreatingMediaGoesToReview(t *testing.T) {
+	assertCrashLoopStopped(t, "CREATING_MEDIA", "NEEDS_REVIEW")
+}
+
+// A crash after Stage kept undecodable bytes but before the failure commit leaves
+// the file at the staging path with "stagingPath" NULL; it must stay discardable.
+func assertOrphanQuarantined(t *testing.T, attempts int, wantStatus, wantCode string) {
+	ctx := context.Background()
+	database, proc, imageID, outboxID := crashLoopFixture(t, "DOWNLOADING", attempts)
+	path, err := proc.Store.PathFor(imageID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not a photo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := proc.ProcessEvent(ctx, outboxID); err != nil {
+		t.Fatalf("ProcessEvent: %v", err)
+	}
+	var status, code string
+	var kept *string
+	if err := database.Pool.QueryRow(ctx, `SELECT "uploadStatus"::text, "errorCode", "stagingPath" FROM "Image" WHERE id = $1`, imageID).Scan(&status, &code, &kept); err != nil {
+		t.Fatal(err)
+	}
+	if status != wantStatus || code != wantCode || kept == nil || *kept != path {
+		t.Fatalf("expected %s/%s with stagingPath %s, got %s/%s %v", wantStatus, wantCode, path, status, code, kept)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("original missing: %v", err)
+	}
+}
+
+func TestRestageInspectFailureKeepsStagingPath(t *testing.T) {
+	assertOrphanQuarantined(t, 0, "UNRECOVERABLE", "UNSUPPORTED_IMAGE")
+}
+
+func TestCrashLoopKeepsStagedFileDiscardable(t *testing.T) {
+	assertOrphanQuarantined(t, 3, "FAILED", "WORKER_INTERRUPTED")
+}
+
+// thumbnailFixture serves the real handler with a stub ffmpeg that logs "S" on start and
+// "E" on end (atomic O_APPEND lines), so overlap is read from log order, not timing.
+type integrationEnv struct {
+	ctx     context.Context
+	db      *db.DB
+	store   *media.Store
+	handler http.Handler
+	session string
+	dir     string
+	env     config.Env
+}
+
+// integrationServer builds an API server on the disposable Postgres/Redis, resets state and signs the owner in.
+func integrationServer(t *testing.T) integrationEnv {
+	t.Helper()
+	if os.Getenv("GALLERY_INTEGRATION") == "" {
+		t.Skip("skipping integration test; set GALLERY_INTEGRATION=1")
+	}
+	temp := t.TempDir()
+	env := config.Env{
+		AppURL:                 "http://localhost",
+		NodeEnv:                "test",
+		DatabaseURL:            os.Getenv("DATABASE_URL"),
+		RedisURL:               os.Getenv("REDIS_URL"),
+		SessionSecret:          strings.Repeat("x", 32),
+		BootstrapSecret:        strings.Repeat("b", 24),
+		TokenEncryptionKey:     strings.Repeat("1", 64),
+		GoogleClientID:         "client",
+		GoogleClientSecret:     "secret",
+		GoogleRedirectURI:      "http://localhost/api/v1/google/callback",
+		StagingPath:            filepath.Join(temp, "stage"),
+		ThumbnailPath:          filepath.Join(temp, "thumb"),
+		MaxImageSizeMB:         50,
+		MaxVideoSizeMB:         200,
+		MinFreeMB:              1,
+		ThumbnailRetentionDays: 30,
+	}
+	ctx := context.Background()
+	database, err := db.Connect(ctx, env)
+	if err != nil {
+		t.Fatalf("db.Connect: %v", err)
+	}
+	t.Cleanup(database.Close)
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+	_, _ = database.Pool.Exec(ctx, `TRUNCATE "UploadAttempt", "Image", "LineGroup", "WebhookEvent", "OutboxEvent", "AuditLog", "GoogleConnection", "Owner" CASCADE`)
+	rOpts, err := redis.ParseURL(env.RedisURL)
+	if err != nil {
+		t.Fatalf("redis.ParseURL: %v", err)
+	}
+	rdb := redis.NewClient(rOpts)
+	t.Cleanup(func() { _ = rdb.Close() })
+	_ = rdb.FlushDB(ctx).Err()
+	store := media.NewStore(env)
+	if err := store.InitDirs(); err != nil {
+		t.Fatal(err)
+	}
+	handler := api.NewServer(env, database, rdb, store).Handler()
+
+	setup := httptest.NewRequest("POST", "/api/v1/auth/setup", strings.NewReader(
+		`{"email":"owner@example.org","password":"long-fixture-password","bootstrap":"`+strings.Repeat("b", 24)+`"}`))
+	setup.Header.Set("Origin", "http://localhost")
+	setup.Header.Set("X-Gallery-Request", "1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, setup)
+	if rec.Code != 200 {
+		t.Fatalf("setup failed (%d): %s", rec.Code, rec.Body.String())
+	}
+	var session string
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "session" {
+			session = c.Value
+		}
+	}
+	if session == "" {
+		t.Fatal("missing session cookie on setup")
+	}
+	return integrationEnv{ctx, database, store, handler, session, temp, env}
+}
+
+func thumbnailFixture(t *testing.T) (get func(ctx context.Context, id string) *httptest.ResponseRecorder, seed func() string, ffmpegLog string) {
+	t.Helper()
+	srv := integrationServer(t)
+	ctx, database, store, handler, session, temp := srv.ctx, srv.db, srv.store, srv.handler, srv.session, srv.dir
+	binDir := filepath.Join(temp, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	buf.WriteString("RIFF")
+	vp8l := []byte{0x2f, 0x00, 0x00, 0x00, 0x00, 0x07, 0x10, 0xfd, 0x7f, 0x1d, 0x08, 0x00}
+	buf.Write([]byte{byte(12 + len(vp8l)), 0, 0, 0})
+	buf.WriteString("WEBPVP8L")
+	buf.Write([]byte{byte(len(vp8l)), 0, 0, 0})
+	buf.Write(vp8l)
+	fixture := filepath.Join(binDir, "fixture.webp")
+	if err := os.WriteFile(fixture, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ffmpegLog = filepath.Join(temp, "ffmpeg.log")
+	script := "#!/bin/sh\nout=\"\"\nfor arg in \"$@\"; do out=\"$arg\"; done\n" +
+		"echo S >> \"" + ffmpegLog + "\"\nsleep 0.5\ncp \"" + fixture + "\" \"$out\"\necho E >> \"" + ffmpegLog + "\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "ffmpeg"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	lineGroupID := "thumb-" + uuid.NewString()
+	if _, err := database.Pool.Exec(ctx, `INSERT INTO "LineGroup" ("id", "lineGroupId", "enabled", "membershipAt", "lastEventAt", "updatedAt") VALUES ($1, $2, true, NOW(), NOW(), NOW())`, uuid.NewString(), lineGroupID); err != nil {
+		t.Fatalf("seed group: %v", err)
+	}
+	seed = func() string {
+		id := uuid.NewString()
+		path, err := store.PathFor(id, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.Pool.Exec(ctx, `INSERT INTO "Image" ("id", "lineGroupId", "channelId", "lineMessageId", "lineEventTimestamp", "uploadStatus", "stagingPath", "updatedAt") VALUES ($1, $2, 'channel', $3, NOW(), 'STAGED'::"UploadState", $4, NOW())`, id, lineGroupID, uuid.NewString(), path); err != nil {
+			t.Fatalf("seed image: %v", err)
+		}
+		return id
+	}
+	get = func(ctx context.Context, id string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/api/v1/images/"+id+"/thumbnail", nil).WithContext(ctx)
+		req.Header.Set("Cookie", "session="+session)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	return get, seed, ffmpegLog
+}
+
+func TestThumbnailConcurrencyBounded(t *testing.T) {
+	get, seed, ffmpegLog := thumbnailFixture(t)
+
+	fanOut := func(ids []string) {
+		t.Helper()
+		var wg sync.WaitGroup
+		codes := make([]int, len(ids))
+		for i, id := range ids {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				codes[i] = get(context.Background(), id).Code
+			}()
+		}
+		wg.Wait()
+		for i, c := range codes {
+			if c != 200 {
+				t.Fatalf("request %d: expected 200, got %d", i, c)
+			}
+		}
+	}
+
+	distinct := make([]string, 10)
+	for i := range distinct {
+		distinct[i] = seed()
+	}
+	fanOut(distinct)
+	raw, err := os.ReadFile(ffmpegLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Fields(string(raw))
+	running, peak, starts := 0, 0, 0
+	for _, l := range lines {
+		if l == "S" {
+			running++
+			starts++
+			peak = max(peak, running)
+		} else {
+			running--
+		}
+	}
+	if starts != 10 {
+		t.Fatalf("expected 10 ffmpeg runs for 10 ids, got %d", starts)
+	}
+	if peak > 2 {
+		t.Fatalf("expected at most 2 concurrent ffmpeg runs, saw %d", peak)
+	}
+
+	if err := os.Remove(ffmpegLog); err != nil {
+		t.Fatal(err)
+	}
+	one := seed()
+	fanOut([]string{one, one, one, one, one, one, one, one, one, one})
+	raw, err = os.ReadFile(ffmpegLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(raw), "S"); n != 1 {
+		t.Fatalf("expected exactly 1 ffmpeg run for one id, got %d", n)
+	}
+}
+
+// A departing leader must neither fail the callers sharing its flight nor block on it.
+func TestThumbnailLeaderCancelDoesNotFailFollower(t *testing.T) {
+	get, seed, ffmpegLog := thumbnailFixture(t)
+	id := seed()
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	defer cancelLeader()
+	order := make(chan string, 2)
+	var leaderRec, followerRec *httptest.ResponseRecorder
+	go func() { leaderRec = get(leaderCtx, id); order <- "leader" }()
+	// The stub logs "S" once the flight is running; the leader owns it.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if raw, _ := os.ReadFile(ffmpegLog); strings.Contains(string(raw), "S") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ffmpeg stub never started")
+		}
+	}
+	go func() { followerRec = get(context.Background(), id); order <- "follower" }()
+	time.Sleep(100 * time.Millisecond) // follower joins the 500 ms flight
+	cancelLeader()
+
+	if first := <-order; first != "leader" {
+		t.Fatalf("expected cancelled leader to return before the flight ended, got %s first", first)
+	}
+	if leaderRec.Body.Len() != 0 {
+		t.Fatalf("cancelled request wrote a body: %q", leaderRec.Body.String())
+	}
+	<-order
+	if followerRec.Code != 200 {
+		t.Fatalf("follower expected 200, got %d: %s", followerRec.Code, followerRec.Body.String())
+	}
+}
+
+func TestResolveAlbumRequeuesGroup(t *testing.T) {
+	if os.Getenv("GALLERY_INTEGRATION") == "" {
+		t.Skip("skipping integration test; set GALLERY_INTEGRATION=1")
+	}
+	srv := integrationServer(t)
+	ctx, database, handler, session := srv.ctx, srv.db, srv.handler, srv.session
+	var rec *httptest.ResponseRecorder
+	seedGroup := func(creating bool) (gid, lineGroupID string) {
+		gid, lineGroupID = uuid.NewString(), "resolve-"+uuid.NewString()
+		if _, err := database.Pool.Exec(ctx, `INSERT INTO "LineGroup" ("id", "lineGroupId", "enabled", "albumCreating", "membershipAt", "lastEventAt", "updatedAt") VALUES ($1, $2, true, $3, NOW(), NOW(), NOW())`, gid, lineGroupID, creating); err != nil {
+			t.Fatalf("seed group: %v", err)
+		}
+		return gid, lineGroupID
+	}
+	seedFailed := func(lineGroupID, code string) string {
+		id := uuid.NewString()
+		if _, err := database.Pool.Exec(ctx, `INSERT INTO "Image" ("id", "lineGroupId", "channelId", "lineMessageId", "lineEventTimestamp", "uploadStatus", "errorCode", "updatedAt") VALUES ($1, $2, 'channel', $3, NOW(), 'FAILED'::"UploadState", $4, NOW())`, id, lineGroupID, uuid.NewString(), code); err != nil {
+			t.Fatalf("seed image: %v", err)
+		}
+		return id
+	}
+	gidA, lineA := seedGroup(true)
+	_, lineB := seedGroup(true)
+	review := []string{seedFailed(lineA, "ALBUM_REVIEW"), seedFailed(lineA, "ALBUM_REVIEW"), seedFailed(lineA, "ALBUM_REVIEW")}
+	storage := seedFailed(lineA, "GOOGLE_STORAGE")
+	other := seedFailed(lineB, "ALBUM_REVIEW")
+
+	req := httptest.NewRequest("POST", "/api/v1/groups/"+gidA+"/resolve-album", strings.NewReader(`{"albumId":"","confirmation":"I checked Google Photos"}`))
+	req.Header.Set("Cookie", "session="+session)
+	req.Header.Set("Origin", "http://localhost")
+	req.Header.Set("X-Gallery-Request", "1")
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("resolve failed (%d): %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		OK       bool `json:"ok"`
+		Requeued int  `json:"requeued"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || !resp.OK || resp.Requeued != 3 {
+		t.Fatalf("response = %s, want ok with requeued=3", rec.Body.String())
+	}
+
+	status := func(id string) string {
+		var s string
+		if err := database.Pool.QueryRow(ctx, `SELECT "uploadStatus"::text FROM "Image" WHERE id = $1`, id).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	outbox := func(id string) int {
+		var n int
+		if err := database.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "OutboxEvent" WHERE "aggregateId" = $1 AND "eventType" = 'PROCESS'`, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for _, id := range review {
+		if s, n := status(id), outbox(id); s != "RETRY_PENDING" || n != 1 {
+			t.Errorf("review image %s: status=%s outbox=%d, want RETRY_PENDING/1", id, s, n)
+		}
+	}
+	for _, id := range []string{storage, other} {
+		if s, n := status(id), outbox(id); s != "FAILED" || n != 0 {
+			t.Errorf("untouched image %s: status=%s outbox=%d, want FAILED/0", id, s, n)
+		}
+	}
+	var requeued string
+	if err := database.Pool.QueryRow(ctx, `SELECT metadata->>'requeued' FROM "AuditLog" WHERE action = 'Owner resolved uncertain album'`).Scan(&requeued); err != nil || requeued != "3" {
+		t.Errorf("audit requeued = %q (err %v), want 3", requeued, err)
+	}
+}
+
+// Guards the /groups latest-image fields: newest image wins per group, none yields images: [].
+func TestGroupsLatestImage(t *testing.T) {
+	srv := integrationServer(t)
+	ctx, database := srv.ctx, srv.db
+	base := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+	seedGroup := func(name string) (gid, lineGroupID string) {
+		gid, lineGroupID = uuid.NewString(), name+"-"+uuid.NewString()
+		if _, err := database.Pool.Exec(ctx, `INSERT INTO "LineGroup" ("id", "lineGroupId", "enabled", "membershipAt", "lastEventAt", "updatedAt") VALUES ($1, $2, true, NOW(), $3, NOW())`, gid, lineGroupID, base); err != nil {
+			t.Fatalf("seed group: %v", err)
+		}
+		return gid, lineGroupID
+	}
+	seedImage := func(lineGroupID string, ts time.Time, status string) string {
+		id := uuid.NewString()
+		if _, err := database.Pool.Exec(ctx, `INSERT INTO "Image" ("id", "lineGroupId", "channelId", "lineMessageId", "lineEventTimestamp", "uploadStatus", "updatedAt") VALUES ($1, $2, 'channel', $3, $4, $5::"UploadState", NOW())`, id, lineGroupID, uuid.NewString(), ts, status); err != nil {
+			t.Fatalf("seed image: %v", err)
+		}
+		return id
+	}
+	gidA, lgA := seedGroup("a")
+	gidB, lgB := seedGroup("b")
+	gidC, _ := seedGroup("c")
+	seedImage(lgA, base.Add(-time.Hour), "FAILED")
+	newestA := seedImage(lgA, base.Add(time.Hour), "UPLOAD_PENDING")
+	newestB := seedImage(lgB, base.Add(30*time.Minute), "STAGED")
+	seedImage(lgB, base.Add(-2*time.Hour), "UPLOAD_PENDING")
+
+	type group struct {
+		ID     string               `json:"id"`
+		Count  struct{ Images int } `json:"_count"`
+		Images []struct {
+			ID                 string `json:"id"`
+			LineEventTimestamp string `json:"lineEventTimestamp"`
+			UploadStatus       string `json:"uploadStatus"`
+		} `json:"images"`
+	}
+	get := func(path string, out any) {
+		t.Helper()
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Cookie", "session="+srv.session)
+		rec := httptest.NewRecorder()
+		srv.handler.ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("GET %s: %d %s", path, rec.Code, rec.Body.String())
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {
+			t.Fatalf("decode %s: %v", path, err)
+		}
+	}
+	want := map[string]struct {
+		count    int
+		id       string
+		ts, stat string
+	}{
+		gidA: {2, newestA, "2026-03-01T11:00:00.000Z", "UPLOAD_PENDING"},
+		gidB: {2, newestB, "2026-03-01T10:30:00.000Z", "STAGED"},
+		gidC: {0, "", "", ""},
+	}
+	check := func(g group) {
+		t.Helper()
+		w, ok := want[g.ID]
+		if !ok {
+			t.Fatalf("unexpected group %s", g.ID)
+		}
+		if g.Count.Images != w.count {
+			t.Errorf("%s: count %d, want %d", g.ID, g.Count.Images, w.count)
+		}
+		if w.id == "" {
+			if g.Images == nil || len(g.Images) != 0 {
+				t.Errorf("%s: images = %v, want []", g.ID, g.Images)
+			}
+			return
+		}
+		if len(g.Images) != 1 || g.Images[0].ID != w.id || g.Images[0].LineEventTimestamp != w.ts || g.Images[0].UploadStatus != w.stat {
+			t.Errorf("%s: images = %+v, want id=%s ts=%s status=%s", g.ID, g.Images, w.id, w.ts, w.stat)
+		}
+	}
+	var list []group
+	get("/api/v1/groups", &list)
+	if len(list) != 3 {
+		t.Fatalf("got %d groups, want 3", len(list))
+	}
+	for _, g := range list {
+		check(g)
+	}
+	for gid := range want {
+		var one group
+		get("/api/v1/groups/"+gid, &one)
+		check(one)
+	}
+}
+
+// closedPoolHandler serves the API on a second, already-closed pool so every DB call fails,
+// while the shared pool and Redis session stay usable.
+func closedPoolHandler(t *testing.T, srv integrationEnv) http.Handler {
+	t.Helper()
+	second, err := db.Connect(srv.ctx, srv.env)
+	if err != nil {
+		t.Fatalf("db.Connect: %v", err)
+	}
+	second.Close()
+	rOpts, err := redis.ParseURL(srv.env.RedisURL)
+	if err != nil {
+		t.Fatalf("redis.ParseURL: %v", err)
+	}
+	rdb := redis.NewClient(rOpts)
+	t.Cleanup(func() { _ = rdb.Close() })
+	return api.NewServer(srv.env, second, rdb, srv.store).Handler()
+}
+
+func apiRequest(handler http.Handler, method, path, body, session string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Origin", "http://localhost")
+	req.Header.Set("X-Gallery-Request", "1")
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if session != "" {
+		req.AddCookie(&http.Cookie{Name: "session", Value: session})
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestLoginDatabaseErrorIs500Not401(t *testing.T) {
+	srv := integrationServer(t)
+	h := closedPoolHandler(t, srv)
+	rec := apiRequest(h, "POST", "/api/v1/auth/login", `{"email":"owner@example.org","password":"long-fixture-password"}`, "")
+	if rec.Code != 500 {
+		t.Fatalf("expected 500 on DB error, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLoginWrongPasswordIs401(t *testing.T) {
+	srv := integrationServer(t)
+	rec := apiRequest(srv.handler, "POST", "/api/v1/auth/login", `{"email":"owner@example.org","password":"wrong-password"}`, "")
+	if rec.Code != 401 {
+		t.Fatalf("expected 401 for wrong password, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDashboardStatsDatabaseErrorIs500(t *testing.T) {
+	srv := integrationServer(t)
+	h := closedPoolHandler(t, srv)
+	rec := apiRequest(h, "GET", "/api/v1/dashboard/stats", "", srv.session)
+	if rec.Code != 500 {
+		t.Fatalf("expected 500 on DB error, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDashboardStatsCounts(t *testing.T) {
+	srv := integrationServer(t)
+	rec := apiRequest(srv.handler, "GET", "/api/v1/dashboard/stats", "", srv.session)
+	if rec.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["total"] != float64(0) || out["failed"] != float64(0) || out["pending"] != float64(0) {
+		t.Fatalf("unexpected stats on empty db: %v", out)
+	}
+}
+
+func TestGoogleCallbackBadStateRedirectsToSettings(t *testing.T) {
+	srv := integrationServer(t)
+	rec := apiRequest(srv.handler, "GET", "/api/v1/google/callback?code=c&state=short", "", srv.session)
+	if rec.Code != 302 || rec.Header().Get("Location") != "/settings?google_error=state" {
+		t.Fatalf("expected 302 to /settings?google_error=state, got %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestHealthFlagsUndecryptableLineCredentials(t *testing.T) {
+	srv := integrationServer(t)
+	if _, err := srv.db.Pool.Exec(srv.ctx, `UPDATE "Owner" SET settings = '{"lineToken":"not-ciphertext"}'::jsonb WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	rec := apiRequest(srv.handler, "GET", "/api/v1/health", "", srv.session)
+	if rec.Code != 200 {
+		t.Fatalf("health %d: %s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if out["lineCredentials"] != "Undecryptable" {
+		t.Fatalf("expected lineCredentials Undecryptable, got %v", out)
+	}
+}
+
+func TestGoogleCallbackAlbumCheckFailureRedirects(t *testing.T) {
+	srv := integrationServer(t)
+	if _, err := srv.db.Pool.Exec(srv.ctx, `INSERT INTO "LineGroup" ("id", "lineGroupId", "enabled", "googleAlbumId", "membershipAt", "lastEventAt", "updatedAt") VALUES ($1, $2, true, 'album', NOW(), NOW(), NOW())`, uuid.NewString(), "cb-"+uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	origTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = origTransport })
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		u := req.URL.String()
+		switch {
+		case strings.Contains(u, "oauth2.googleapis.com"):
+			return jsonResponse(200, map[string]string{
+				"refresh_token": "refresh",
+				"scope":         strings.Join(google.Scopes, " "),
+				"access_token":  "access",
+			}), nil
+		case strings.HasSuffix(u, "/albums/album"):
+			return jsonResponse(403, map[string]string{"error": "denied"}), nil
+		default:
+			return jsonResponse(200, map[string]any{}), nil
+		}
+	})
+	connect := apiRequest(srv.handler, "GET", "/api/v1/google/connect", "", srv.session)
+	loc, err := url.Parse(connect.Header().Get("Location"))
+	if err != nil || loc.Query().Get("state") == "" {
+		t.Fatalf("connect did not return a state: %d %q", connect.Code, connect.Header().Get("Location"))
+	}
+	rec := apiRequest(srv.handler, "GET", "/api/v1/google/callback?code=c&state="+loc.Query().Get("state"), "", srv.session)
+	if rec.Code != 302 || rec.Header().Get("Location") != "/settings?google_error=exchange" {
+		t.Fatalf("expected 302 to /settings?google_error=exchange, got %d %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+}
+
+func TestCleanupPrunesOldAttemptsAndAuditLogs(t *testing.T) {
+	srv := integrationServer(t)
+	ctx := srv.ctx
+	groupID := "ret-" + uuid.NewString()
+	if _, err := srv.db.Pool.Exec(ctx, `INSERT INTO "LineGroup" ("id", "lineGroupId", "enabled", "membershipAt", "lastEventAt", "updatedAt") VALUES ($1, $2, true, NOW(), NOW(), NOW())`, uuid.NewString(), groupID); err != nil {
+		t.Fatal(err)
+	}
+	seedImage := func(status string) string {
+		id := uuid.NewString()
+		if _, err := srv.db.Pool.Exec(ctx, `INSERT INTO "Image" ("id", "lineGroupId", "channelId", "lineMessageId", "lineEventTimestamp", "uploadStatus", "googleMediaItemId", "updatedAt") VALUES ($1, $2, 'channel', $3, NOW(), $4::"UploadState", CASE WHEN $4 = 'SYNCED' THEN 'media' END, NOW())`, id, groupID, uuid.NewString(), status); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	attemptNo := 0
+	seedAttempt := func(imageID string, age time.Duration) string {
+		id := uuid.NewString()
+		attemptNo++
+		if _, err := srv.db.Pool.Exec(ctx, `INSERT INTO "UploadAttempt" ("id", "imageId", "attemptNumber", "status", "startedAt") VALUES ($1, $2, $3, 'DONE', $4)`, id, imageID, attemptNo, time.Now().UTC().Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	seedAudit := func(age time.Duration) string {
+		id := uuid.NewString()
+		if _, err := srv.db.Pool.Exec(ctx, `INSERT INTO "AuditLog" ("id", "action", "targetType", "targetId", "createdAt") VALUES ($1, 'x', 'image', 'y', $2)`, id, time.Now().UTC().Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	const day = 24 * time.Hour
+	synced, failed := seedImage("SYNCED"), seedImage("FAILED")
+	oldSynced, newSynced := seedAttempt(synced, 100*day), seedAttempt(synced, 10*day)
+	oldFailed := seedAttempt(failed, 100*day) // unsynced history is kept for diagnosis
+	oldAudit, newAudit := seedAudit(400*day), seedAudit(10*day)
+
+	proc := &worker.Processor{DB: srv.db, Store: srv.store}
+	if err := proc.Cleanup(ctx, time.Now()); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	exists := func(table, id string) bool {
+		var n int
+		if err := srv.db.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "`+table+`" WHERE id = $1`, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n == 1
+	}
+	for _, c := range []struct {
+		table, id string
+		keep      bool
+	}{
+		{"UploadAttempt", oldSynced, false}, {"UploadAttempt", newSynced, true}, {"UploadAttempt", oldFailed, true},
+		{"AuditLog", oldAudit, false}, {"AuditLog", newAudit, true},
+	} {
+		if got := exists(c.table, c.id); got != c.keep {
+			t.Errorf("%s %s: exists=%v, want %v", c.table, c.id, got, c.keep)
+		}
+	}
+}
+
+func TestHealthReportsWorkerLastProgress(t *testing.T) {
+	srv := integrationServer(t)
+	health := func() map[string]any {
+		rec := apiRequest(srv.handler, "GET", "/api/v1/health", "", srv.session)
+		if rec.Code != 200 {
+			t.Fatalf("health %d: %s", rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return out
+	}
+	if _, ok := health()["workerLastProgressAt"]; ok {
+		t.Fatal("workerLastProgressAt must be omitted when the key is missing")
+	}
+	rOpts, _ := redis.ParseURL(srv.env.RedisURL)
+	rdb := redis.NewClient(rOpts)
+	defer rdb.Close()
+	const ts = "2026-11-21T01:02:03.123456789Z"
+	if err := rdb.Set(srv.ctx, "worker:lastProgress", ts, 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if got := health()["workerLastProgressAt"]; got != ts {
+		t.Fatalf("workerLastProgressAt = %v, want %s", got, ts)
+	}
 }

@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path"
@@ -25,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/sync/singleflight"
 
 	"rivosnap/internal/config"
 	"rivosnap/internal/crypto"
@@ -41,7 +43,6 @@ var (
 	rangeRe     = regexp.MustCompile(`^bytes=(\d*)-(\d*)$`)
 	digitsOnly  = regexp.MustCompile(`^\d+$`)
 	isoDateRe   = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
-	ctrlCharsRe = regexp.MustCompile(`[\x00-\x1f\x7f]`)
 )
 
 type httpError struct {
@@ -70,6 +71,44 @@ type Server struct {
 	rateMu        sync.Mutex
 	rateMap       map[string]rateEntry
 	authRates     map[string]rateEntry
+
+	// thumbSem caps concurrent on-demand ffmpeg runs; thumbFlight shares one run per id+size.
+	thumbSem    chan struct{}
+	thumbFlight singleflight.Group
+}
+
+const (
+	maxThumbJobs     = 2
+	thumbWaitTimeout = 20 * time.Second
+)
+
+var errThumbBusy = errors.New("thumbnail generation busy")
+
+// thumbnail generates a missing thumbnail, waiting up to thumbWaitTimeout for one of
+// maxThumbJobs slots. Waiters hold no ffmpeg process. The flight runs on a context
+// detached from the caller, so one departing client cannot fail the callers sharing it;
+// an abandoned flight still finishes and fills the cache.
+func (s *Server) thumbnail(ctx context.Context, id string, size int, kind string) (string, error) {
+	ch := s.thumbFlight.DoChan(id+":"+strconv.Itoa(size), func() (any, error) {
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), thumbWaitTimeout+time.Minute)
+		defer cancel()
+		select {
+		case s.thumbSem <- struct{}{}:
+			defer func() { <-s.thumbSem }()
+		case <-fctx.Done():
+			return "", fctx.Err()
+		case <-time.After(thumbWaitTimeout):
+			return "", errThumbBusy
+		}
+		return s.Store.Thumbnail(fctx, id, size, kind)
+	})
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case r := <-ch:
+		path, _ := r.Val.(string)
+		return path, r.Err
+	}
 }
 
 func NewServer(env config.Env, database *db.DB, rdb *redis.Client, store *media.Store) *Server {
@@ -80,16 +119,48 @@ func NewServer(env config.Env, database *db.DB, rdb *redis.Client, store *media.
 		Store:     store,
 		rateMap:   make(map[string]rateEntry),
 		authRates: make(map[string]rateEntry),
+		thumbSem:  make(chan struct{}, maxThumbJobs),
 	}
 }
 
-// Trust the socket peer, not client-supplied forwarding headers.
+// peerHost returns the socket peer address without the port.
 func peerHost(addr string) string {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return addr
 	}
 	return host
+}
+
+// clientHost returns the real client address. X-Real-IP is honoured only from a
+// loopback or private peer (the Nginx proxy), which overwrites it on every request.
+func clientHost(r *http.Request) string {
+	peer := peerHost(r.RemoteAddr)
+	if pa, err := netip.ParseAddr(peer); err == nil && (pa.IsLoopback() || pa.IsPrivate()) {
+		if ip, err := netip.ParseAddr(r.Header.Get("X-Real-IP")); err == nil {
+			return ip.String()
+		}
+	}
+	return peer
+}
+
+// rateKey picks the general rate-limit bucket for a request.
+func rateKey(r *http.Request, sid string) string {
+	if r.URL.Path == "/api/webhooks/line" {
+		host := clientHost(r)
+		// LINE never connects from a private address: a private/loopback host means the
+		// external proxy did not forward the client, so fall back to per-signature buckets.
+		if ip, err := netip.ParseAddr(host); err == nil && (ip.IsLoopback() || ip.IsPrivate()) {
+			if sig := r.Header.Get("X-Line-Signature"); sig != "" {
+				return "webhook:sig:" + sig
+			}
+		}
+		return "webhook:" + host
+	}
+	if sid != "" {
+		return "session:" + sid
+	}
+	return "ip:" + clientHost(r)
 }
 
 func (s *Server) checkRate(bucket map[string]rateEntry, key string, max int, window time.Duration) bool {
@@ -329,17 +400,7 @@ func (s *Server) Handler() http.Handler {
 
 		urlPath := r.URL.Path
 		sid := s.sid(r)
-		rateKey := "ip:" + peerHost(r.RemoteAddr)
-		if urlPath == "/api/webhooks/line" {
-			sig := r.Header.Get("X-Line-Signature")
-			if sig == "" {
-				sig = peerHost(r.RemoteAddr)
-			}
-			rateKey = "webhook:" + sig
-		} else if sid != "" {
-			rateKey = "session:" + sid
-		}
-		if !s.checkRate(s.rateMap, rateKey, 600, time.Minute) {
+		if !s.checkRate(s.rateMap, rateKey(r, sid), 600, time.Minute) {
 			writeJSON(w, 429, map[string]string{"error": "Too many requests. Try again later."})
 			return
 		}
@@ -393,7 +454,7 @@ func newSPAHandler(dist fs.FS) http.Handler {
 
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request, mode string) {
 	ctx := r.Context()
-	if !s.checkRate(s.authRates, mode+":"+peerHost(r.RemoteAddr), 8, 5*time.Minute) {
+	if !s.checkRate(s.authRates, mode+":"+clientHost(r), 8, 5*time.Minute) {
 		writeJSON(w, 429, map[string]string{"error": "Too many requests. Try again later."})
 		return
 	}
@@ -446,12 +507,12 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request, mode string)
 	} else {
 		var email, passwordHash string
 		err := s.DB.Pool.QueryRow(ctx, `SELECT "email", "passwordHash" FROM "Owner" WHERE id = 1`).Scan(&email, &passwordHash)
-		if errors.Is(err, pgx.ErrNoRows) || !crypto.VerifyPassword(passwordHash, b.Password) || email != b.Email {
-			writeJSON(w, 401, map[string]string{"error": "Email or password is incorrect."})
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			writeErr(w, err)
 			return
 		}
-		if err != nil {
-			writeErr(w, err)
+		if err != nil || !crypto.VerifyPassword(passwordHash, b.Password) || email != b.Email {
+			writeJSON(w, 401, map[string]string{"error": "Email or password is incorrect."})
 			return
 		}
 	}
@@ -501,12 +562,23 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{
+	if _, err := s.DB.LineCredentials(ctx); err != nil {
+		writeErr(w, err)
+		return
+	}
+	out := map[string]any{
 		"database":     "Online",
 		"redis":        pong,
 		"worker":       workerState,
 		"diskPressure": pressured,
-	})
+	}
+	if s.DB.LineCredentialsUndecryptable() {
+		out["lineCredentials"] = "Undecryptable"
+	}
+	if lp, _ := s.Redis.Get(ctx, "worker:lastProgress").Result(); lp != "" {
+		out["workerLastProgressAt"] = lp
+	}
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -641,7 +713,10 @@ func (s *Server) handlePostSettingsLine(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var mismatchCount int
-	_ = s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "Image" WHERE "channelId" <> $1`, info.UserID).Scan(&mismatchCount)
+	if err := s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "Image" WHERE "channelId" <> $1`, info.UserID).Scan(&mismatchCount); err != nil {
+		writeErr(w, err)
+		return
+	}
 	if (existing.Destination != "" && existing.Destination != info.UserID) || mismatchCount > 0 {
 		writeErr(w, model.NewFault("CHANNEL", "Use the original LINE channel.", false, 0))
 		return
@@ -721,19 +796,22 @@ func (s *Server) handleGoogleConnect(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	fail := func(code string) {
+		http.Redirect(w, r, "/settings?google_error="+code, http.StatusFound)
+	}
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
 	if len(state) != 64 {
-		writeErr(w, errBadRequest("Invalid request. Check the submitted values."))
+		fail("state")
 		return
 	}
 	storedSid, err := s.Redis.GetDel(ctx, "oauth:"+state).Result()
 	if err != nil || storedSid != s.sid(r) {
-		writeJSON(w, 403, map[string]string{"error": "OAuth state expired or invalid."})
+		fail("state")
 		return
 	}
 	if code == "" {
-		writeErr(w, model.NewFault("GOOGLE_AUTH", "Consent declined. Start connection again.", false, 0))
+		fail("denied")
 		return
 	}
 	t, err := google.Token(ctx, s.Env, map[string]string{
@@ -742,7 +820,7 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		"grant_type":   "authorization_code",
 	})
 	if err != nil {
-		writeErr(w, err)
+		fail("exchange")
 		return
 	}
 	granted := strings.Split(t.Scope, " ")
@@ -754,24 +832,24 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if t.RefreshToken == "" || !allScopes {
-		writeErr(w, model.NewFault("GOOGLE_SCOPES", "Grant all requested Google Photos permissions and offline access.", false, 0))
+		fail("scopes")
 		return
 	}
 	if err := google.Validate(ctx, t.AccessToken); err != nil {
-		writeErr(w, err)
+		fail("exchange")
 		return
 	}
 	var mappedAlbumID *string
 	_ = s.DB.Pool.QueryRow(ctx, `SELECT "googleAlbumId" FROM "LineGroup" WHERE "googleAlbumId" IS NOT NULL LIMIT 1`).Scan(&mappedAlbumID)
 	if mappedAlbumID != nil && *mappedAlbumID != "" {
 		if _, err := google.Album(ctx, *mappedAlbumID, t.AccessToken); err != nil {
-			writeErr(w, err)
+			fail("exchange")
 			return
 		}
 	}
 	encRef, err := crypto.Seal(t.RefreshToken, s.Env.TokenEncryptionKey)
 	if err != nil {
-		writeErr(w, err)
+		fail("exchange")
 		return
 	}
 	if _, err := s.DB.Pool.Exec(
@@ -786,7 +864,7 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		     "lastError" = NULL`,
 		encRef, t.Scope,
 	); err != nil {
-		writeErr(w, err)
+		fail("exchange")
 		return
 	}
 	s.DB.ClearAccessCache()
@@ -829,36 +907,32 @@ func (s *Server) handleGoogleDisconnect(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-func (s *Server) fetchGroupMap(ctx context.Context, row pgx.Row) (map[string]any, error) {
+func (s *Server) fetchGroupMap(row pgx.Row) (map[string]any, error) {
 	var id, lineGroupID, membershipStatus string
 	var displayName, googleAlbumID *string
 	var enabled, albumCreating bool
 	var enabledSince *time.Time
 	var membershipAt, lastEventAt, createdAt, updatedAt time.Time
 	var imageCount int
+	var imgID, imgStatus *string
+	var imgTS *time.Time
 
 	err := row.Scan(
 		&id, &lineGroupID, &displayName, &enabled, &membershipStatus,
 		&enabledSince, &membershipAt, &googleAlbumID, &albumCreating,
 		&lastEventAt, &createdAt, &updatedAt, &imageCount,
+		&imgID, &imgTS, &imgStatus,
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	images := make([]map[string]any, 0, 1)
-	var imgID, imgStatus string
-	var imgTS time.Time
-	err = s.DB.Pool.QueryRow(
-		ctx,
-		`SELECT "id", "lineEventTimestamp", "uploadStatus"::text FROM "Image" WHERE "lineGroupId" = $1 ORDER BY "lineEventTimestamp" DESC LIMIT 1`,
-		lineGroupID,
-	).Scan(&imgID, &imgTS, &imgStatus)
-	if err == nil {
+	if imgID != nil && imgTS != nil && imgStatus != nil {
 		images = append(images, map[string]any{
-			"id":                 imgID,
-			"lineEventTimestamp": fmtTime(imgTS),
-			"uploadStatus":       imgStatus,
+			"id":                 *imgID,
+			"lineEventTimestamp": fmtTime(*imgTS),
+			"uploadStatus":       *imgStatus,
 		})
 	}
 
@@ -887,8 +961,13 @@ func (s *Server) handleGetGroups(w http.ResponseWriter, r *http.Request) {
 		`SELECT g."id", g."lineGroupId", g."displayName", g."enabled", g."membershipStatus",
 		        g."enabledSince", g."membershipAt", g."googleAlbumId", g."albumCreating",
 		        g."lastEventAt", g."createdAt", g."updatedAt",
-		        (SELECT COUNT(*) FROM "Image" i WHERE i."lineGroupId" = g."lineGroupId")
+		        (SELECT COUNT(*) FROM "Image" i WHERE i."lineGroupId" = g."lineGroupId"),
+		        li."id", li."lineEventTimestamp", li."uploadStatus"
 		 FROM "LineGroup" g
+		 LEFT JOIN LATERAL (
+		        SELECT "id", "lineEventTimestamp", "uploadStatus"::text AS "uploadStatus" FROM "Image"
+		        WHERE "lineGroupId" = g."lineGroupId" ORDER BY "lineEventTimestamp" DESC LIMIT 1
+		 ) li ON true
 		 ORDER BY g."lastEventAt" DESC`,
 	)
 	if err != nil {
@@ -898,7 +977,7 @@ func (s *Server) handleGetGroups(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	result := make([]map[string]any, 0)
 	for rows.Next() {
-		m, err := s.fetchGroupMap(ctx, rows)
+		m, err := s.fetchGroupMap(rows)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -920,11 +999,17 @@ func (s *Server) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 		`SELECT g."id", g."lineGroupId", g."displayName", g."enabled", g."membershipStatus",
 		        g."enabledSince", g."membershipAt", g."googleAlbumId", g."albumCreating",
 		        g."lastEventAt", g."createdAt", g."updatedAt",
-		        (SELECT COUNT(*) FROM "Image" i WHERE i."lineGroupId" = g."lineGroupId")
-		 FROM "LineGroup" g WHERE g."id" = $1`,
+		        (SELECT COUNT(*) FROM "Image" i WHERE i."lineGroupId" = g."lineGroupId"),
+		        li."id", li."lineEventTimestamp", li."uploadStatus"
+		 FROM "LineGroup" g
+		 LEFT JOIN LATERAL (
+		        SELECT "id", "lineEventTimestamp", "uploadStatus"::text AS "uploadStatus" FROM "Image"
+		        WHERE "lineGroupId" = g."lineGroupId" ORDER BY "lineEventTimestamp" DESC LIMIT 1
+		 ) li ON true
+		 WHERE g."id" = $1`,
 		gid,
 	)
-	m, err := s.fetchGroupMap(ctx, row)
+	m, err := s.fetchGroupMap(row)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -1030,25 +1115,15 @@ func (s *Server) handleRefreshGroup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, model.NewFault("LINE_CONFIG", "Configure LINE credentials first.", false, 0))
 		return
 	}
-	resp, err := line.Call(ctx, "group/"+url.PathEscape(lineGroupID)+"/summary", creds.Token, false, 90*time.Second)
+	displayName, err := line.GroupName(ctx, creds.Token, lineGroupID)
+	if errors.Is(err, line.ErrNoGroupName) {
+		writeErr(w, errBadRequest("Invalid request. Check the submitted values."))
+		return
+	}
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	defer resp.Body.Close()
-	var info struct {
-		GroupName string `json:"groupName"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil || info.GroupName == "" {
-		writeErr(w, errBadRequest("Invalid request. Check the submitted values."))
-		return
-	}
-	cleaned := strings.TrimSpace(ctrlCharsRe.ReplaceAllString(info.GroupName, " "))
-	runes := []rune(cleaned)
-	if len(runes) > 500 {
-		runes = runes[:500]
-	}
-	displayName := string(runes)
 	if displayName == "" {
 		writeErr(w, model.NewFault("LINE_SUMMARY", "LINE did not return a group name.", false, 0))
 		return
@@ -1186,10 +1261,27 @@ func (s *Server) handleResolveAlbum(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, pgx.ErrNoRows)
 		return
 	}
+	// Mirrors handleRetryJob for every image this group parked as ALBUM_REVIEW.
+	requeue, err := tx.Exec(
+		ctx,
+		`WITH r AS (
+		   UPDATE "Image" SET "uploadStatus" = 'RETRY_PENDING'::"UploadState", "updatedAt" = NOW()
+		   WHERE "lineGroupId" = (SELECT "lineGroupId" FROM "LineGroup" WHERE id = $1)
+		     AND "uploadStatus" = 'FAILED'::"UploadState" AND "errorCode" = 'ALBUM_REVIEW'
+		   RETURNING id)
+		 INSERT INTO "OutboxEvent" ("id", "eventType", "aggregateId", "payload", "createdAt", "availableAt")
+		 SELECT gen_random_uuid()::text, 'PROCESS', id, '{}'::jsonb, NOW(), NOW() FROM r`,
+		gid,
+	)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	requeued := int(requeue.RowsAffected())
 	if _, err := tx.Exec(
 		ctx,
-		`INSERT INTO "AuditLog" ("id", "action", "targetType", "targetId", "metadata", "createdAt") VALUES ($1, 'Owner resolved uncertain album', 'group', $2, '{}'::jsonb, NOW())`,
-		uuid.NewString(), gid,
+		`INSERT INTO "AuditLog" ("id", "action", "targetType", "targetId", "metadata", "createdAt") VALUES ($1, 'Owner resolved uncertain album', 'group', $2, jsonb_build_object('requeued', $3::int), NOW())`,
+		uuid.NewString(), gid, requeued,
 	); err != nil {
 		writeErr(w, err)
 		return
@@ -1198,7 +1290,7 @@ func (s *Server) handleResolveAlbum(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, map[string]any{"ok": true, "requeued": requeued})
 }
 
 var bangkokZone = time.FixedZone("ICT", 7*3600)
@@ -1518,40 +1610,9 @@ func (s *Server) handleMediaStream(w http.ResponseWriter, r *http.Request, thumb
 		}
 		defer f.Close()
 
-		if !thumb && mediaType == "VIDEO" && r.Header.Get("Range") != "" {
-			if m := rangeRe.FindStringSubmatch(r.Header.Get("Range")); len(m) == 3 {
-				start := int64(0)
-				if m[1] != "" {
-					start, _ = strconv.ParseInt(m[1], 10, 64)
-				}
-				end := localInfo.Size() - 1
-				if m[2] != "" {
-					if parsedEnd, err := strconv.ParseInt(m[2], 10, 64); err == nil && parsedEnd < end {
-						end = parsedEnd
-					}
-				}
-				if start <= end && end < localInfo.Size() {
-					if _, err := f.Seek(start, io.SeekStart); err == nil {
-						w.Header().Set("Accept-Ranges", "bytes")
-						w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, localInfo.Size()))
-						w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
-						w.Header().Set("Content-Type", contentType)
-						w.WriteHeader(http.StatusPartialContent)
-						_, _ = io.CopyN(w, f, end-start+1)
-						return
-					}
-				}
-			}
-		}
-		acceptRanges := "none"
-		if !thumb && mediaType == "VIDEO" {
-			acceptRanges = "bytes"
-		}
-		w.Header().Set("Accept-Ranges", acceptRanges)
-		w.Header().Set("Content-Length", strconv.FormatInt(localInfo.Size(), 10))
 		w.Header().Set("Content-Type", contentType)
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.Copy(w, f)
+		// ServeContent handles Range (incl. suffix), 416, and conditional requests.
+		http.ServeContent(w, r, "", localInfo.ModTime(), f)
 		return
 	}
 
@@ -1560,7 +1621,15 @@ func (s *Server) handleMediaStream(w http.ResponseWriter, r *http.Request, thumb
 		if mediaType == "VIDEO" {
 			mediaKind = "VIDEO"
 		}
-		tpath, err := s.Store.Thumbnail(ctx, imgID, size, mediaKind)
+		tpath, err := s.thumbnail(ctx, imgID, size, mediaKind)
+		if ctx.Err() != nil {
+			return // client gone; nothing to write
+		}
+		if errors.Is(err, errThumbBusy) {
+			w.Header().Set("Retry-After", "5")
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Thumbnail generation is busy. Try again shortly."})
+			return
+		}
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -1655,7 +1724,7 @@ func (s *Server) handleMediaStream(w http.ResponseWriter, r *http.Request, thumb
 	}
 
 	if thumb {
-		buf, err := io.ReadAll(remote.Body)
+		buf, err := io.ReadAll(io.LimitReader(remote.Body, 10<<20))
 		if err != nil {
 			writeErr(w, model.NewFault("GOOGLE_MEDIA", "Google media is unavailable.", true, 0))
 			return
@@ -1872,18 +1941,22 @@ func (s *Server) handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var total, synced, failed, pending, groups, warnings int
-	_ = s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "Image"`).Scan(&total)
-	_ = s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "Image" WHERE "uploadStatus" = 'SYNCED'::"UploadState"`).Scan(&synced)
-	_ = s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "Image" WHERE "uploadStatus" IN ('FAILED'::"UploadState", 'NEEDS_REVIEW'::"UploadState", 'UNRECOVERABLE'::"UploadState")`).Scan(&failed)
-	_ = s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "Image" WHERE "uploadStatus" NOT IN ('SYNCED'::"UploadState", 'NEEDS_REVIEW'::"UploadState", 'FAILED'::"UploadState", 'UNRECOVERABLE'::"UploadState")`).Scan(&pending)
-	_ = s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "LineGroup" WHERE "enabled" = true`).Scan(&groups)
-
-	warnCutoff := time.Now().Add(-time.Duration(policy.FailedDays-1) * 24 * time.Hour)
-	_ = s.DB.Pool.QueryRow(
+	warnCutoff := time.Now().UTC().Add(-time.Duration(policy.FailedDays-1) * 24 * time.Hour)
+	if err := s.DB.Pool.QueryRow(
 		ctx,
-		`SELECT COUNT(*) FROM "Image" WHERE "uploadStatus" <> 'SYNCED'::"UploadState" AND "stagingPath" IS NOT NULL AND "createdAt" <= $1`,
+		`SELECT
+		   COUNT(*),
+		   COUNT(*) FILTER (WHERE "uploadStatus" = 'SYNCED'::"UploadState"),
+		   COUNT(*) FILTER (WHERE "uploadStatus" IN ('FAILED'::"UploadState", 'NEEDS_REVIEW'::"UploadState", 'UNRECOVERABLE'::"UploadState")),
+		   COUNT(*) FILTER (WHERE "uploadStatus" NOT IN ('SYNCED'::"UploadState", 'NEEDS_REVIEW'::"UploadState", 'FAILED'::"UploadState", 'UNRECOVERABLE'::"UploadState")),
+		   COUNT(*) FILTER (WHERE "uploadStatus" <> 'SYNCED'::"UploadState" AND "stagingPath" IS NOT NULL AND "createdAt" <= $1),
+		   (SELECT COUNT(*) FROM "LineGroup" WHERE "enabled" = true)
+		 FROM "Image"`,
 		warnCutoff,
-	).Scan(&warnings)
+	).Scan(&total, &synced, &failed, &pending, &warnings, &groups); err != nil {
+		writeErr(w, err)
+		return
+	}
 
 	var oldest *time.Time
 	_ = s.DB.Pool.QueryRow(
@@ -2018,7 +2091,7 @@ func openAPISpec() map[string]any {
 				"post": map[string]any{"tags": []string{"groups"}, "summary": "POST /groups/:id/refresh"},
 			},
 			"/api/v1/groups/{id}/resolve-album": map[string]any{
-				"post": map[string]any{"tags": []string{"groups"}, "summary": "POST /groups/:id/resolve-album"},
+				"post": map[string]any{"tags": []string{"groups"}, "summary": "POST /groups/:id/resolve-album (responds {ok, requeued})"},
 			},
 			"/api/v1/images": map[string]any{
 				"get": map[string]any{"tags": []string{"images"}, "summary": "GET /images"},

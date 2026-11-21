@@ -77,7 +77,7 @@ func Transition(a, b State, mediaID string) error {
 			StateNeedsReview,
 		}, b))
 	if !allowed || (b == StateSynced && strings.TrimSpace(mediaID) == "") {
-		return fmt.Errorf("Invalid transition %s → %s", a, b)
+		return fmt.Errorf("invalid transition %s → %s", a, b)
 	}
 	return nil
 }

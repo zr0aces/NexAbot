@@ -32,7 +32,7 @@ x-service: &service
 
 services:
   postgres:
-    image: postgres:18
+    image: postgres:18.7
     container_name: rivosnap-postgres
     user: postgres
     restart: unless-stopped
@@ -50,7 +50,7 @@ services:
       retries: 15
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.12-alpine
     container_name: rivosnap-redis
     user: redis
     restart: unless-stopped
@@ -90,7 +90,7 @@ services:
       retries: 3
 
   web:
-    image: nginxinc/nginx-unprivileged:stable-alpine
+    image: nginxinc/nginx-unprivileged:1.30.6-alpine
     container_name: rivosnap-web
     ports:
       - "${WEB_PORT:-8080}:8080"

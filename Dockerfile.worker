@@ -1,4 +1,4 @@
-FROM golang:1.27-alpine AS build
+FROM golang:1.27.4-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -8,7 +8,7 @@ COPY internal internal
 RUN mkdir -p internal/web/dist && touch internal/web/dist/.keep && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/rivosnap ./cmd/rivosnap
 
-FROM alpine:3.21 AS runtime
+FROM alpine:3.21.10 AS runtime
 RUN apk add --no-cache ca-certificates ffmpeg tzdata && \
     addgroup -g 1000 node && adduser -u 1000 -G node -s /bin/sh -D node
 WORKDIR /app

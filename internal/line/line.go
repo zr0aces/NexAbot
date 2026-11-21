@@ -10,6 +10,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strings"
 	"time"
 
 	"rivosnap/internal/httpclient"
@@ -115,4 +117,35 @@ func Call(ctx context.Context, path, token string, data bool, timeout time.Durat
 
 func Download(ctx context.Context, id, token string) (*http.Response, error) {
 	return Call(ctx, "message/"+url.PathEscape(id)+"/content", token, true, 600*time.Second)
+}
+
+var ctrlCharsRe = regexp.MustCompile(`[\x00-\x1f\x7f]`)
+
+// ErrNoGroupName means LINE returned an empty or undecodable group summary.
+var ErrNoGroupName = errors.New("LINE group summary has no group name")
+
+// CleanGroupName replaces control characters with spaces, trims, and caps the name at 500 runes.
+func CleanGroupName(s string) string {
+	runes := []rune(strings.TrimSpace(ctrlCharsRe.ReplaceAllString(s, " ")))
+	if len(runes) > 500 {
+		runes = runes[:500]
+	}
+	return string(runes)
+}
+
+// GroupName fetches and sanitizes a group's display name. Transport errors pass through;
+// an empty or undecodable name returns ErrNoGroupName.
+func GroupName(ctx context.Context, token, groupID string) (string, error) {
+	resp, err := Call(ctx, "group/"+url.PathEscape(groupID)+"/summary", token, false, 90*time.Second)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var info struct {
+		GroupName string `json:"groupName"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil || info.GroupName == "" {
+		return "", ErrNoGroupName
+	}
+	return CleanGroupName(info.GroupName), nil
 }

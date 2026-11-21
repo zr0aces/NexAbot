@@ -53,7 +53,9 @@ const healthLabels: Record<string, string> = {
 
 function SidebarHealth({ mobile = false }: { mobile?: boolean }) {
   const q = query<Record<string, string | boolean>>("/health");
-  const entries = Object.entries(q.data ?? {});
+  const entries = Object.entries(q.data ?? {}).filter(
+    ([k]) => k !== "workerLastProgressAt",
+  );
   if (mobile) {
     return (
       <Link
@@ -220,7 +222,11 @@ function App() {
       "/auth/status",
     ),
     qc = useQueryClient();
-  const stats = useQueryClient().getQueryData<Stats>(["/dashboard/stats"]);
+  // Gated on auth: api() reloads the page on a 401, which would loop on the login screen.
+  const stats = query<Stats>(
+    "/dashboard/stats",
+    auth.data?.authenticated === true,
+  ).data;
 
   if (auth.error)
     return (

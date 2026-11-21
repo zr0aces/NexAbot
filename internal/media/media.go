@@ -67,7 +67,7 @@ func (s *Store) InitDirs() error {
 
 func (s *Store) PathFor(id string, size int) (string, error) {
 	if !uuidRe.MatchString(id) {
-		return "", errors.New("Invalid image ID")
+		return "", errors.New("invalid image ID")
 	}
 	if size > 0 {
 		return filepath.Join(s.Env.ThumbnailPath, fmt.Sprintf("%s.%d.webp", id, size)), nil
@@ -197,19 +197,6 @@ func Inspect(filePath string) (MediaInfo, error) {
 	}
 	if int64(cfg.Width)*int64(cfg.Height) > 100_000_000 {
 		return MediaInfo{}, model.NewFault("UNSUPPORTED_IMAGE", "Invalid or oversized image.", false, 0)
-	}
-	// Verify full image decodability (catches truncated/corrupt payloads)
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return MediaInfo{}, model.NewFault("UNSUPPORTED_IMAGE", "Invalid or oversized image.", false, 0)
-	}
-	if mime == "image/webp" {
-		if _, err := webp.Decode(f); err != nil {
-			return MediaInfo{}, model.NewFault("UNSUPPORTED_IMAGE", "Invalid or oversized image.", false, 0)
-		}
-	} else {
-		if _, _, err := image.Decode(f); err != nil {
-			return MediaInfo{}, model.NewFault("UNSUPPORTED_IMAGE", "Invalid or oversized image.", false, 0)
-		}
 	}
 	sha, err := Digest(filePath)
 	if err != nil {
@@ -405,14 +392,12 @@ func (s *Store) Stage(ctx context.Context, id string, body io.Reader, mediaType 
 	} else {
 		info, err = Inspect(tmp)
 	}
-	if err != nil {
-		return MediaInfo{}, err
-	}
-	if err := os.Rename(tmp, target); err != nil {
-		return MediaInfo{}, err
+	// Keep the bytes even when inspection fails: never silently delete an unuploaded original.
+	if renameErr := os.Rename(tmp, target); renameErr != nil {
+		return MediaInfo{}, renameErr
 	}
 	info.StagingPath = target
-	return info, nil
+	return info, err
 }
 
 func Touch(filePath string) error {

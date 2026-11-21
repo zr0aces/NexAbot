@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -26,10 +28,19 @@ type DB struct {
 	cachedToken string
 	cachedEnc   string
 	expiresAt   time.Time
+
+	lineCredsBroken atomic.Bool
+	lineCredsLogged sync.Once
 }
 
 func Connect(ctx context.Context, env config.Env) (*DB, error) {
-	pool, err := pgxpool.New(ctx, env.DatabaseURL)
+	cfg, err := pgxpool.ParseConfig(env.DatabaseURL)
+	if err != nil {
+		return nil, err
+	}
+	// Pin UTC so timestamp(3) columns compare correctly regardless of the server's TZ.
+	cfg.ConnConfig.RuntimeParams["timezone"] = "UTC"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -152,17 +163,29 @@ func (d *DB) LineCredentials(ctx context.Context) (LineCreds, error) {
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &m)
 	}
+	broken := false
 	token := d.Env.LineChannelAccessToken
 	if encTok, ok := m["lineToken"].(string); ok && encTok != "" {
 		if plain, err := crypto.Open(encTok, d.Env.TokenEncryptionKey); err == nil {
 			token = plain
+		} else {
+			broken = true
 		}
 	}
 	secret := d.Env.LineChannelSecret
 	if encSec, ok := m["lineSecret"].(string); ok && encSec != "" {
 		if plain, err := crypto.Open(encSec, d.Env.TokenEncryptionKey); err == nil {
 			secret = plain
+		} else {
+			broken = true
 		}
+	}
+	d.lineCredsBroken.Store(broken)
+	if broken {
+		// Never log the secret, ciphertext or key.
+		d.lineCredsLogged.Do(func() {
+			fmt.Printf(`{"level":50,"time":%d,"msg":"saved LINE credentials could not be decrypted; using environment values"}`+"\n", time.Now().UnixMilli())
+		})
 	}
 	dest, _ := m["destination"].(string)
 	return LineCreds{
@@ -171,6 +194,10 @@ func (d *DB) LineCredentials(ctx context.Context) (LineCreds, error) {
 		Destination: dest,
 	}, nil
 }
+
+// LineCredentialsUndecryptable reports whether the last LineCredentials call fell back to
+// environment values because saved credentials could not be decrypted.
+func (d *DB) LineCredentialsUndecryptable() bool { return d.lineCredsBroken.Load() }
 
 func (d *DB) OwnerSettingsRaw(ctx context.Context) ([]byte, error) {
 	var raw []byte

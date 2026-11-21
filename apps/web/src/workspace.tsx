@@ -378,12 +378,20 @@ export function Groups({ albums = false }: { albums?: boolean }) {
                   e.preventDefault();
                   if (!checkedMap[g.id]) return;
                   const f = new FormData(e.currentTarget);
-                  void action.run(() =>
-                    api("/groups/" + g.id + "/resolve-album", "POST", {
-                      albumId: String(f.get("albumId") ?? ""),
-                      confirmation: "I checked Google Photos",
-                    }),
-                  );
+                  void action.run(async () => {
+                    const res = await api<{ requeued?: number }>(
+                      "/groups/" + g.id + "/resolve-album",
+                      "POST",
+                      {
+                        albumId: String(f.get("albumId") ?? ""),
+                        confirmation: "I checked Google Photos",
+                      },
+                    );
+                    const n = res.requeued ?? 0;
+                    return n > 0
+                      ? `Saved. ${n} ${n === 1 ? "photo" : "photos"} re-queued.`
+                      : "Saved.";
+                  });
                 }}
               >
                 <label style={{ marginTop: 0 }}>
@@ -465,8 +473,18 @@ export function Groups({ albums = false }: { albums?: boolean }) {
   );
 }
 
+const googleErrors: Record<string, string> = {
+  state: "Google sign-in expired or was invalid. Start the connection again.",
+  denied: "Google consent was declined. Start the connection again.",
+  scopes:
+    "Grant all requested Google Photos permissions and offline access, then connect again.",
+  exchange: "Google connection failed. Try again.",
+};
+
 export function Settings() {
-  const q = query<Prefs>("/settings"),
+  const [sp] = useSearchParams(),
+    googleError = sp.get("google_error"),
+    q = query<Prefs>("/settings"),
     google = query<{ status: string; lastError?: string }>("/google/status"),
     action = useAction(),
     [editingLine, setEditingLine] = useState(false);
@@ -506,6 +524,11 @@ export function Settings() {
         title="Settings"
         sub="Control where group media arrives, what gets saved, and how long copies stay local."
       />
+      {googleError && (
+        <p role="alert">
+          {googleErrors[googleError] ?? googleErrors.exchange}
+        </p>
+      )}
       <p role="status" aria-live="polite">
         {action.msg}
       </p>
@@ -766,6 +789,7 @@ export function healthStatus(
   v: string | boolean,
 ): "ok" | "warn" | "err" {
   if (k === "diskPressure") return v === false ? "ok" : "warn";
+  if (k === "workerLastProgressAt") return "ok"; // informational timestamp
   if (v === "Online" || v === "PONG") return "ok";
   return "err";
 }
@@ -788,11 +812,13 @@ export function Health() {
               ? v
                 ? "Pressured"
                 : "Normal"
-              : String(v);
+              : k === "workerLastProgressAt"
+                ? new Date(String(v)).toLocaleString()
+                : String(v);
           return (
             <section className="healthCard" key={k}>
               <div className="row">
-                <b>{k}</b>
+                <b>{k === "workerLastProgressAt" ? "Last worker progress" : k}</b>
                 <span className={"pill " + state}>{display}</span>
               </div>
             </section>
