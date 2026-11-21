@@ -23,6 +23,7 @@ func TestEmbeddedMigrationsChecksums(t *testing.T) {
 		"202611190001_initial":              "db8d930f1f8ce52b2bf71ef6c060019ce4b9f07bbb84e74d6037cf848e01ed66",
 		"202611190002_authorization_window": "4ea50f39fe7ec571be43c919d38b63c80192b1b314e1dbb41b63148adca1c966",
 		"202611200001_video_support":        "47c5467f66d0317d2f13dc80639ff48819e95fe654f887829c6f0177f164f8bf",
+		"202611210001_timestamptz":          "e8d2fd066de4b34d3aec6bcc9d54cbe14cacd9f60d08490011283f189398ca0b",
 	}
 	for _, m := range list {
 		if want, ok := expected[m.Name]; ok && m.Checksum != want {
@@ -123,5 +124,41 @@ func TestSessionTimezoneIsUTC(t *testing.T) {
 	}
 	if tz != "UTC" {
 		t.Fatalf("expected session timezone UTC, got %q", tz)
+	}
+}
+
+func TestAllTimestampColumnsAreTimestamptz(t *testing.T) {
+	if os.Getenv("GALLERY_INTEGRATION") == "" {
+		t.Skip("skipping timestamptz integration test; set GALLERY_INTEGRATION=1")
+	}
+	ctx := context.Background()
+	database, err := db.Connect(ctx, config.Env{DatabaseURL: os.Getenv("DATABASE_URL")})
+	if err != nil {
+		t.Fatalf("db.Connect: %v", err)
+	}
+	defer database.Close()
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	rows, err := database.Pool.Query(ctx, `SELECT table_name || '.' || column_name FROM information_schema.columns
+		WHERE table_schema = 'public' AND data_type = 'timestamp without time zone' AND table_name <> '_prisma_migrations'
+		ORDER BY 1`)
+	if err != nil {
+		t.Fatalf("query columns: %v", err)
+	}
+	defer rows.Close()
+	var naive []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			t.Fatal(err)
+		}
+		naive = append(naive, c)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(naive) > 0 {
+		t.Fatalf("columns still timestamp without time zone: %s", strings.Join(naive, ", "))
 	}
 }
