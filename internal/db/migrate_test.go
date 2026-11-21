@@ -46,8 +46,8 @@ func TestMigrationLifecycleIntegration(t *testing.T) {
 	}
 	defer database.Close()
 
-	// 1. Existing Prisma-migrated database upgrade path:
-	// test-integration.sh runs `prisma migrate deploy` first, so _prisma_migrations already has 3 rows.
+	// 1. Re-running Go migrations on a Go-migrated database:
+	// test-integration.sh runs `rivosnap migrate` first, so _prisma_migrations already holds every embedded migration.
 	// Insert a LineGroup with distinct membershipAt and enabledSince to verify 202611190002_authorization_window is NOT re-run.
 	t1 := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	t2 := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)

@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Exact patch, not go-version-file: go.mod says 1.26.0 and govulncheck would flag
+      # standard-library fixes already shipped in the image toolchain. Keep in sync with
+      # the golang builder image in Dockerfile.api and Dockerfile.worker.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.4'
+
+      # internal/web embeds dist/, which is gitignored and absent from a fresh checkout.
+      - name: Stub embedded web dist
+        run: mkdir -p internal/web/dist && touch internal/web/dist/.keep
+
+      - run: go vet ./...
+      - run: test -z "$(gofmt -l cmd internal packages)"
+      - run: go test ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
+
+  web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - run: corepack enable
+      - run: corepack pnpm install --frozen-lockfile
+      - run: corepack pnpm typecheck
+      - run: corepack pnpm build
+      - run: node --test scripts/version-control.test.mjs
+      - run: node scripts/sync-version.mjs --check
+
+  integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.4'
+
+      - name: Stub embedded web dist
+        run: mkdir -p internal/web/dist && touch internal/web/dist/.keep
+
+      - name: Install ffprobe
+        run: sudo apt-get install -y ffmpeg
+
+      - run: bash scripts/test-integration.sh

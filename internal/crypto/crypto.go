@@ -102,10 +102,10 @@ func HashPassword(password string) (string, error) {
 		return "", err
 	}
 	const (
-		memory  = 65536
+		memory   = 65536
 		timeCost = 3
-		threads = 4
-		keyLen  = 32
+		threads  = 4
+		keyLen   = 32
 	)
 	hash := argon2.IDKey([]byte(password), salt, timeCost, memory, threads, keyLen)
 	return fmt.Sprintf(
