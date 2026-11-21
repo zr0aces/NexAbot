@@ -1596,40 +1596,9 @@ func (s *Server) handleMediaStream(w http.ResponseWriter, r *http.Request, thumb
 		}
 		defer f.Close()
 
-		if !thumb && mediaType == "VIDEO" && r.Header.Get("Range") != "" {
-			if m := rangeRe.FindStringSubmatch(r.Header.Get("Range")); len(m) == 3 {
-				start := int64(0)
-				if m[1] != "" {
-					start, _ = strconv.ParseInt(m[1], 10, 64)
-				}
-				end := localInfo.Size() - 1
-				if m[2] != "" {
-					if parsedEnd, err := strconv.ParseInt(m[2], 10, 64); err == nil && parsedEnd < end {
-						end = parsedEnd
-					}
-				}
-				if start <= end && end < localInfo.Size() {
-					if _, err := f.Seek(start, io.SeekStart); err == nil {
-						w.Header().Set("Accept-Ranges", "bytes")
-						w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, localInfo.Size()))
-						w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
-						w.Header().Set("Content-Type", contentType)
-						w.WriteHeader(http.StatusPartialContent)
-						_, _ = io.CopyN(w, f, end-start+1)
-						return
-					}
-				}
-			}
-		}
-		acceptRanges := "none"
-		if !thumb && mediaType == "VIDEO" {
-			acceptRanges = "bytes"
-		}
-		w.Header().Set("Accept-Ranges", acceptRanges)
-		w.Header().Set("Content-Length", strconv.FormatInt(localInfo.Size(), 10))
 		w.Header().Set("Content-Type", contentType)
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.Copy(w, f)
+		// ServeContent handles Range (incl. suffix), 416, and conditional requests.
+		http.ServeContent(w, r, "", localInfo.ModTime(), f)
 		return
 	}
 

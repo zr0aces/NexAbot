@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -628,6 +629,48 @@ func TestFullPipelineIntegration(t *testing.T) {
 	if rangeRes.Code != 206 || rangeRes.Header().Get("Content-Range") != "bytes 0-6/100" || rangeRes.Body.String() != "partial" {
 		t.Fatalf("unexpected Range response: code=%d cr=%s body=%q", rangeRes.Code, rangeRes.Header().Get("Content-Range"), rangeRes.Body.String())
 	}
+	t.Run("local media ranges", func(t *testing.T) {
+		path, err := store.PathFor(stagedID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		data := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.Pool.Exec(ctx, `UPDATE "Image" SET "stagingPath" = $2 WHERE id = $1`, stagedID, path); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			_ = os.Remove(path)
+			_, _ = database.Pool.Exec(ctx, `UPDATE "Image" SET "stagingPath" = NULL WHERE id = $1`, stagedID)
+		}()
+		n := len(data)
+		get := func(rng string) *httptest.ResponseRecorder {
+			h := map[string]string{"Cookie": "session=" + sessionCookie}
+			if rng != "" {
+				h["Range"] = rng
+			}
+			return doReq("GET", "/api/v1/images/"+stagedID+"/content", h, nil)
+		}
+		if res := get("bytes=-10"); res.Code != 206 ||
+			res.Header().Get("Content-Range") != fmt.Sprintf("bytes %d-%d/%d", n-10, n-1, n) ||
+			res.Body.String() != string(data[n-10:]) {
+			t.Fatalf("suffix range: code=%d cr=%q body=%q", res.Code, res.Header().Get("Content-Range"), res.Body.String())
+		}
+		if res := get(fmt.Sprintf("bytes=%d-", n+100)); res.Code != 416 {
+			t.Fatalf("unsatisfiable range: expected 416, got %d", res.Code)
+		}
+		if res := get("bytes=0-9"); res.Code != 206 || res.Body.String() != string(data[:10]) {
+			t.Fatalf("first range: code=%d body=%q", res.Code, res.Body.String())
+		}
+		if res := get(""); res.Code != 200 || res.Body.Len() != n || res.Header().Get("Content-Type") != "video/mp4" {
+			t.Fatalf("full body: code=%d len=%d ct=%q", res.Code, res.Body.Len(), res.Header().Get("Content-Type"))
+		}
+	})
 	t.Run("discard retries failed unlink", func(t *testing.T) {
 		path, err := store.PathFor(stagedID, 0)
 		if err != nil {
