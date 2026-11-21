@@ -1049,3 +1049,136 @@ func TestThumbnailLeaderCancelDoesNotFailFollower(t *testing.T) {
 		t.Fatalf("follower expected 200, got %d: %s", followerRec.Code, followerRec.Body.String())
 	}
 }
+
+func TestResolveAlbumRequeuesGroup(t *testing.T) {
+	if os.Getenv("GALLERY_INTEGRATION") == "" {
+		t.Skip("skipping integration test; set GALLERY_INTEGRATION=1")
+	}
+	temp := t.TempDir()
+	env := config.Env{
+		AppURL:                 "http://localhost",
+		NodeEnv:                "test",
+		DatabaseURL:            os.Getenv("DATABASE_URL"),
+		RedisURL:               os.Getenv("REDIS_URL"),
+		SessionSecret:          strings.Repeat("x", 32),
+		BootstrapSecret:        strings.Repeat("b", 24),
+		TokenEncryptionKey:     strings.Repeat("1", 64),
+		GoogleClientID:         "client",
+		GoogleClientSecret:     "secret",
+		GoogleRedirectURI:      "http://localhost/api/v1/google/callback",
+		StagingPath:            filepath.Join(temp, "stage"),
+		ThumbnailPath:          filepath.Join(temp, "thumb"),
+		MaxImageSizeMB:         50,
+		MaxVideoSizeMB:         200,
+		MinFreeMB:              1,
+		ThumbnailRetentionDays: 30,
+	}
+	ctx := context.Background()
+	database, err := db.Connect(ctx, env)
+	if err != nil {
+		t.Fatalf("db.Connect: %v", err)
+	}
+	t.Cleanup(database.Close)
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+	_, _ = database.Pool.Exec(ctx, `TRUNCATE "UploadAttempt", "Image", "LineGroup", "WebhookEvent", "OutboxEvent", "AuditLog", "GoogleConnection", "Owner" CASCADE`)
+	rOpts, err := redis.ParseURL(env.RedisURL)
+	if err != nil {
+		t.Fatalf("redis.ParseURL: %v", err)
+	}
+	rdb := redis.NewClient(rOpts)
+	t.Cleanup(func() { _ = rdb.Close() })
+	_ = rdb.FlushDB(ctx).Err()
+	store := media.NewStore(env)
+	if err := store.InitDirs(); err != nil {
+		t.Fatal(err)
+	}
+	handler := api.NewServer(env, database, rdb, store).Handler()
+
+	setup := httptest.NewRequest("POST", "/api/v1/auth/setup", strings.NewReader(
+		`{"email":"owner@example.org","password":"long-fixture-password","bootstrap":"`+strings.Repeat("b", 24)+`"}`))
+	setup.Header.Set("Origin", "http://localhost")
+	setup.Header.Set("X-Gallery-Request", "1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, setup)
+	if rec.Code != 200 {
+		t.Fatalf("setup failed (%d): %s", rec.Code, rec.Body.String())
+	}
+	var session string
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "session" {
+			session = c.Value
+		}
+	}
+	if session == "" {
+		t.Fatal("missing session cookie on setup")
+	}
+
+	seedGroup := func(creating bool) (gid, lineGroupID string) {
+		gid, lineGroupID = uuid.NewString(), "resolve-"+uuid.NewString()
+		if _, err := database.Pool.Exec(ctx, `INSERT INTO "LineGroup" ("id", "lineGroupId", "enabled", "albumCreating", "membershipAt", "lastEventAt", "updatedAt") VALUES ($1, $2, true, $3, NOW(), NOW(), NOW())`, gid, lineGroupID, creating); err != nil {
+			t.Fatalf("seed group: %v", err)
+		}
+		return gid, lineGroupID
+	}
+	seedFailed := func(lineGroupID, code string) string {
+		id := uuid.NewString()
+		if _, err := database.Pool.Exec(ctx, `INSERT INTO "Image" ("id", "lineGroupId", "channelId", "lineMessageId", "lineEventTimestamp", "uploadStatus", "errorCode", "updatedAt") VALUES ($1, $2, 'channel', $3, NOW(), 'FAILED'::"UploadState", $4, NOW())`, id, lineGroupID, uuid.NewString(), code); err != nil {
+			t.Fatalf("seed image: %v", err)
+		}
+		return id
+	}
+	gidA, lineA := seedGroup(true)
+	_, lineB := seedGroup(true)
+	review := []string{seedFailed(lineA, "ALBUM_REVIEW"), seedFailed(lineA, "ALBUM_REVIEW"), seedFailed(lineA, "ALBUM_REVIEW")}
+	storage := seedFailed(lineA, "GOOGLE_STORAGE")
+	other := seedFailed(lineB, "ALBUM_REVIEW")
+
+	req := httptest.NewRequest("POST", "/api/v1/groups/"+gidA+"/resolve-album", strings.NewReader(`{"albumId":"","confirmation":"I checked Google Photos"}`))
+	req.Header.Set("Cookie", "session="+session)
+	req.Header.Set("Origin", "http://localhost")
+	req.Header.Set("X-Gallery-Request", "1")
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("resolve failed (%d): %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		OK       bool `json:"ok"`
+		Requeued int  `json:"requeued"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || !resp.OK || resp.Requeued != 3 {
+		t.Fatalf("response = %s, want ok with requeued=3", rec.Body.String())
+	}
+
+	status := func(id string) string {
+		var s string
+		if err := database.Pool.QueryRow(ctx, `SELECT "uploadStatus"::text FROM "Image" WHERE id = $1`, id).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	outbox := func(id string) int {
+		var n int
+		if err := database.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "OutboxEvent" WHERE "aggregateId" = $1 AND "eventType" = 'PROCESS'`, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for _, id := range review {
+		if s, n := status(id), outbox(id); s != "RETRY_PENDING" || n != 1 {
+			t.Errorf("review image %s: status=%s outbox=%d, want RETRY_PENDING/1", id, s, n)
+		}
+	}
+	for _, id := range []string{storage, other} {
+		if s, n := status(id), outbox(id); s != "FAILED" || n != 0 {
+			t.Errorf("untouched image %s: status=%s outbox=%d, want FAILED/0", id, s, n)
+		}
+	}
+	var requeued string
+	if err := database.Pool.QueryRow(ctx, `SELECT metadata->>'requeued' FROM "AuditLog" WHERE action = 'Owner resolved uncertain album'`).Scan(&requeued); err != nil || requeued != "3" {
+		t.Errorf("audit requeued = %q (err %v), want 3", requeued, err)
+	}
+}

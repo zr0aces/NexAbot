@@ -1240,10 +1240,27 @@ func (s *Server) handleResolveAlbum(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, pgx.ErrNoRows)
 		return
 	}
+	// Mirrors handleRetryJob for every image this group parked as ALBUM_REVIEW.
+	requeue, err := tx.Exec(
+		ctx,
+		`WITH r AS (
+		   UPDATE "Image" SET "uploadStatus" = 'RETRY_PENDING'::"UploadState", "updatedAt" = NOW()
+		   WHERE "lineGroupId" = (SELECT "lineGroupId" FROM "LineGroup" WHERE id = $1)
+		     AND "uploadStatus" = 'FAILED'::"UploadState" AND "errorCode" = 'ALBUM_REVIEW'
+		   RETURNING id)
+		 INSERT INTO "OutboxEvent" ("id", "eventType", "aggregateId", "payload", "createdAt", "availableAt")
+		 SELECT gen_random_uuid()::text, 'PROCESS', id, '{}'::jsonb, NOW(), NOW() FROM r`,
+		gid,
+	)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	requeued := int(requeue.RowsAffected())
 	if _, err := tx.Exec(
 		ctx,
-		`INSERT INTO "AuditLog" ("id", "action", "targetType", "targetId", "metadata", "createdAt") VALUES ($1, 'Owner resolved uncertain album', 'group', $2, '{}'::jsonb, NOW())`,
-		uuid.NewString(), gid,
+		`INSERT INTO "AuditLog" ("id", "action", "targetType", "targetId", "metadata", "createdAt") VALUES ($1, 'Owner resolved uncertain album', 'group', $2, jsonb_build_object('requeued', $3::int), NOW())`,
+		uuid.NewString(), gid, requeued,
 	); err != nil {
 		writeErr(w, err)
 		return
@@ -1252,7 +1269,7 @@ func (s *Server) handleResolveAlbum(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, map[string]any{"ok": true, "requeued": requeued})
 }
 
 var bangkokZone = time.FixedZone("ICT", 7*3600)
@@ -2080,7 +2097,7 @@ func openAPISpec() map[string]any {
 				"post": map[string]any{"tags": []string{"groups"}, "summary": "POST /groups/:id/refresh"},
 			},
 			"/api/v1/groups/{id}/resolve-album": map[string]any{
-				"post": map[string]any{"tags": []string{"groups"}, "summary": "POST /groups/:id/resolve-album"},
+				"post": map[string]any{"tags": []string{"groups"}, "summary": "POST /groups/:id/resolve-album (responds {ok, requeued})"},
 			},
 			"/api/v1/images": map[string]any{
 				"get": map[string]any{"tags": []string{"images"}, "summary": "GET /images"},
