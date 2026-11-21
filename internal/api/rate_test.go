@@ -83,6 +83,29 @@ func TestRateKey(t *testing.T) {
 	}
 }
 
+func TestRateKeyWebhook(t *testing.T) {
+	const path = "/api/webhooks/line"
+	cases := []struct {
+		name, peer, realIP, sig, want string
+	}{
+		{"public client keeps address key", "172.18.0.5:1234", "203.0.113.1", "sig-a", "webhook:203.0.113.1"},
+		{"public client ignores other signature", "172.18.0.5:1234", "203.0.113.1", "sig-b", "webhook:203.0.113.1"},
+		{"public peer without proxy", "203.0.113.9:1", "", "sig-a", "webhook:203.0.113.9"},
+		{"private client uses signature", "172.18.0.5:1234", "", "sig-a", "webhook:sig:sig-a"},
+		{"private forwarded client uses signature", "172.18.0.5:1234", "10.0.0.7", "sig-b", "webhook:sig:sig-b"},
+		{"loopback client uses signature", "127.0.0.1:1", "", "sig-a", "webhook:sig:sig-a"},
+		{"private client without signature", "172.18.0.5:1234", "", "", "webhook:172.18.0.5"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := map[string]string{"X-Real-IP": c.realIP, "X-Line-Signature": c.sig}
+			if got := rateKey(rateReq(path, c.peer, h), ""); got != c.want {
+				t.Fatalf("got %q want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestAuthRatePerClient(t *testing.T) {
 	s := NewServer(config.Env{AppURL: "https://fixture.invalid"}, nil, nil, nil)
 	for i := 1; i <= 8; i++ {

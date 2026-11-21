@@ -147,7 +147,15 @@ func clientHost(r *http.Request) string {
 // rateKey picks the general rate-limit bucket for a request.
 func rateKey(r *http.Request, sid string) string {
 	if r.URL.Path == "/api/webhooks/line" {
-		return "webhook:" + clientHost(r)
+		host := clientHost(r)
+		// LINE never connects from a private address: a private/loopback host means the
+		// external proxy did not forward the client, so fall back to per-signature buckets.
+		if ip, err := netip.ParseAddr(host); err == nil && (ip.IsLoopback() || ip.IsPrivate()) {
+			if sig := r.Header.Get("X-Line-Signature"); sig != "" {
+				return "webhook:sig:" + sig
+			}
+		}
+		return "webhook:" + host
 	}
 	if sid != "" {
 		return "session:" + sid
