@@ -379,7 +379,7 @@ export function Groups({ albums = false }: { albums?: boolean }) {
                   if (!checkedMap[g.id]) return;
                   const f = new FormData(e.currentTarget);
                   void action.run(async () => {
-                    const res = await api<{ requeued: number }>(
+                    const res = await api<{ requeued?: number }>(
                       "/groups/" + g.id + "/resolve-album",
                       "POST",
                       {
@@ -387,7 +387,10 @@ export function Groups({ albums = false }: { albums?: boolean }) {
                         confirmation: "I checked Google Photos",
                       },
                     );
-                    return "Saved. " + res.requeued + " photos re-queued.";
+                    const n = res.requeued ?? 0;
+                    return n > 0
+                      ? `Saved. ${n} ${n === 1 ? "photo" : "photos"} re-queued.`
+                      : "Saved.";
                   });
                 }}
               >

@@ -835,35 +835,22 @@ func TestCrashLoopKeepsStagedFileDiscardable(t *testing.T) {
 
 // thumbnailFixture serves the real handler with a stub ffmpeg that logs "S" on start and
 // "E" on end (atomic O_APPEND lines), so overlap is read from log order, not timing.
-func thumbnailFixture(t *testing.T) (get func(ctx context.Context, id string) *httptest.ResponseRecorder, seed func() string, ffmpegLog string) {
+type integrationEnv struct {
+	ctx     context.Context
+	db      *db.DB
+	store   *media.Store
+	handler http.Handler
+	session string
+	dir     string
+}
+
+// integrationServer builds an API server on the disposable Postgres/Redis, resets state and signs the owner in.
+func integrationServer(t *testing.T) integrationEnv {
 	t.Helper()
 	if os.Getenv("GALLERY_INTEGRATION") == "" {
 		t.Skip("skipping integration test; set GALLERY_INTEGRATION=1")
 	}
 	temp := t.TempDir()
-	binDir := filepath.Join(temp, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	var buf bytes.Buffer
-	buf.WriteString("RIFF")
-	vp8l := []byte{0x2f, 0x00, 0x00, 0x00, 0x00, 0x07, 0x10, 0xfd, 0x7f, 0x1d, 0x08, 0x00}
-	buf.Write([]byte{byte(12 + len(vp8l)), 0, 0, 0})
-	buf.WriteString("WEBPVP8L")
-	buf.Write([]byte{byte(len(vp8l)), 0, 0, 0})
-	buf.Write(vp8l)
-	fixture := filepath.Join(binDir, "fixture.webp")
-	if err := os.WriteFile(fixture, buf.Bytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	ffmpegLog = filepath.Join(temp, "ffmpeg.log")
-	script := "#!/bin/sh\nout=\"\"\nfor arg in \"$@\"; do out=\"$arg\"; done\n" +
-		"echo S >> \"" + ffmpegLog + "\"\nsleep 0.5\ncp \"" + fixture + "\" \"$out\"\necho E >> \"" + ffmpegLog + "\"\n"
-	if err := os.WriteFile(filepath.Join(binDir, "ffmpeg"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
 	env := config.Env{
 		AppURL:                 "http://localhost",
 		NodeEnv:                "test",
@@ -923,6 +910,35 @@ func thumbnailFixture(t *testing.T) (get func(ctx context.Context, id string) *h
 	if session == "" {
 		t.Fatal("missing session cookie on setup")
 	}
+	return integrationEnv{ctx, database, store, handler, session, temp}
+}
+
+func thumbnailFixture(t *testing.T) (get func(ctx context.Context, id string) *httptest.ResponseRecorder, seed func() string, ffmpegLog string) {
+	t.Helper()
+	srv := integrationServer(t)
+	ctx, database, store, handler, session, temp := srv.ctx, srv.db, srv.store, srv.handler, srv.session, srv.dir
+	binDir := filepath.Join(temp, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	buf.WriteString("RIFF")
+	vp8l := []byte{0x2f, 0x00, 0x00, 0x00, 0x00, 0x07, 0x10, 0xfd, 0x7f, 0x1d, 0x08, 0x00}
+	buf.Write([]byte{byte(12 + len(vp8l)), 0, 0, 0})
+	buf.WriteString("WEBPVP8L")
+	buf.Write([]byte{byte(len(vp8l)), 0, 0, 0})
+	buf.Write(vp8l)
+	fixture := filepath.Join(binDir, "fixture.webp")
+	if err := os.WriteFile(fixture, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ffmpegLog = filepath.Join(temp, "ffmpeg.log")
+	script := "#!/bin/sh\nout=\"\"\nfor arg in \"$@\"; do out=\"$arg\"; done\n" +
+		"echo S >> \"" + ffmpegLog + "\"\nsleep 0.5\ncp \"" + fixture + "\" \"$out\"\necho E >> \"" + ffmpegLog + "\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "ffmpeg"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	lineGroupID := "thumb-" + uuid.NewString()
 	if _, err := database.Pool.Exec(ctx, `INSERT INTO "LineGroup" ("id", "lineGroupId", "enabled", "membershipAt", "lastEventAt", "updatedAt") VALUES ($1, $2, true, NOW(), NOW(), NOW())`, uuid.NewString(), lineGroupID); err != nil {
@@ -1054,67 +1070,9 @@ func TestResolveAlbumRequeuesGroup(t *testing.T) {
 	if os.Getenv("GALLERY_INTEGRATION") == "" {
 		t.Skip("skipping integration test; set GALLERY_INTEGRATION=1")
 	}
-	temp := t.TempDir()
-	env := config.Env{
-		AppURL:                 "http://localhost",
-		NodeEnv:                "test",
-		DatabaseURL:            os.Getenv("DATABASE_URL"),
-		RedisURL:               os.Getenv("REDIS_URL"),
-		SessionSecret:          strings.Repeat("x", 32),
-		BootstrapSecret:        strings.Repeat("b", 24),
-		TokenEncryptionKey:     strings.Repeat("1", 64),
-		GoogleClientID:         "client",
-		GoogleClientSecret:     "secret",
-		GoogleRedirectURI:      "http://localhost/api/v1/google/callback",
-		StagingPath:            filepath.Join(temp, "stage"),
-		ThumbnailPath:          filepath.Join(temp, "thumb"),
-		MaxImageSizeMB:         50,
-		MaxVideoSizeMB:         200,
-		MinFreeMB:              1,
-		ThumbnailRetentionDays: 30,
-	}
-	ctx := context.Background()
-	database, err := db.Connect(ctx, env)
-	if err != nil {
-		t.Fatalf("db.Connect: %v", err)
-	}
-	t.Cleanup(database.Close)
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("db.Migrate: %v", err)
-	}
-	_, _ = database.Pool.Exec(ctx, `TRUNCATE "UploadAttempt", "Image", "LineGroup", "WebhookEvent", "OutboxEvent", "AuditLog", "GoogleConnection", "Owner" CASCADE`)
-	rOpts, err := redis.ParseURL(env.RedisURL)
-	if err != nil {
-		t.Fatalf("redis.ParseURL: %v", err)
-	}
-	rdb := redis.NewClient(rOpts)
-	t.Cleanup(func() { _ = rdb.Close() })
-	_ = rdb.FlushDB(ctx).Err()
-	store := media.NewStore(env)
-	if err := store.InitDirs(); err != nil {
-		t.Fatal(err)
-	}
-	handler := api.NewServer(env, database, rdb, store).Handler()
-
-	setup := httptest.NewRequest("POST", "/api/v1/auth/setup", strings.NewReader(
-		`{"email":"owner@example.org","password":"long-fixture-password","bootstrap":"`+strings.Repeat("b", 24)+`"}`))
-	setup.Header.Set("Origin", "http://localhost")
-	setup.Header.Set("X-Gallery-Request", "1")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, setup)
-	if rec.Code != 200 {
-		t.Fatalf("setup failed (%d): %s", rec.Code, rec.Body.String())
-	}
-	var session string
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == "session" {
-			session = c.Value
-		}
-	}
-	if session == "" {
-		t.Fatal("missing session cookie on setup")
-	}
-
+	srv := integrationServer(t)
+	ctx, database, handler, session := srv.ctx, srv.db, srv.handler, srv.session
+	var rec *httptest.ResponseRecorder
 	seedGroup := func(creating bool) (gid, lineGroupID string) {
 		gid, lineGroupID = uuid.NewString(), "resolve-"+uuid.NewString()
 		if _, err := database.Pool.Exec(ctx, `INSERT INTO "LineGroup" ("id", "lineGroupId", "enabled", "albumCreating", "membershipAt", "lastEventAt", "updatedAt") VALUES ($1, $2, true, $3, NOW(), NOW(), NOW())`, gid, lineGroupID, creating); err != nil {
