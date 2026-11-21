@@ -833,7 +833,7 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	_ = s.DB.Pool.QueryRow(ctx, `SELECT "googleAlbumId" FROM "LineGroup" WHERE "googleAlbumId" IS NOT NULL LIMIT 1`).Scan(&mappedAlbumID)
 	if mappedAlbumID != nil && *mappedAlbumID != "" {
 		if _, err := google.Album(ctx, *mappedAlbumID, t.AccessToken); err != nil {
-			writeErr(w, err)
+			fail("exchange")
 			return
 		}
 	}

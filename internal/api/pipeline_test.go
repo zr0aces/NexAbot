@@ -1374,3 +1374,36 @@ func TestHealthFlagsUndecryptableLineCredentials(t *testing.T) {
 		t.Fatalf("expected lineCredentials Undecryptable, got %v", out)
 	}
 }
+
+func TestGoogleCallbackAlbumCheckFailureRedirects(t *testing.T) {
+	srv := integrationServer(t)
+	if _, err := srv.db.Pool.Exec(srv.ctx, `INSERT INTO "LineGroup" ("id", "lineGroupId", "enabled", "googleAlbumId", "membershipAt", "lastEventAt", "updatedAt") VALUES ($1, $2, true, 'album', NOW(), NOW(), NOW())`, uuid.NewString(), "cb-"+uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	origTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = origTransport })
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		u := req.URL.String()
+		switch {
+		case strings.Contains(u, "oauth2.googleapis.com"):
+			return jsonResponse(200, map[string]string{
+				"refresh_token": "refresh",
+				"scope":         strings.Join(google.Scopes, " "),
+				"access_token":  "access",
+			}), nil
+		case strings.HasSuffix(u, "/albums/album"):
+			return jsonResponse(403, map[string]string{"error": "denied"}), nil
+		default:
+			return jsonResponse(200, map[string]any{}), nil
+		}
+	})
+	connect := apiRequest(srv.handler, "GET", "/api/v1/google/connect", "", srv.session)
+	loc, err := url.Parse(connect.Header().Get("Location"))
+	if err != nil || loc.Query().Get("state") == "" {
+		t.Fatalf("connect did not return a state: %d %q", connect.Code, connect.Header().Get("Location"))
+	}
+	rec := apiRequest(srv.handler, "GET", "/api/v1/google/callback?code=c&state="+loc.Query().Get("state"), "", srv.session)
+	if rec.Code != 302 || rec.Header().Get("Location") != "/settings?google_error=exchange" {
+		t.Fatalf("expected 302 to /settings?google_error=exchange, got %d %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+}
