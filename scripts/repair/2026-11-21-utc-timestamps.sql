@@ -7,7 +7,8 @@
 --
 -- Usage:
 --   psql -v cutover_bkk='YYYY-MM-DD HH:MM:SS' -U <user> -d <db> -f scripts/repair/2026-11-21-utc-timestamps.sql
--- Default is a dry run (preview, then ROLLBACK). Add -v apply=1 to COMMIT.
+-- Default is a dry run (preview, then ROLLBACK). Only -v apply=1 (or another psql
+-- true value: true/on/yes) COMMITs; unset, apply=0 or any false value ROLLs BACK.
 -- :cutover_bkk is the Go backend cutover time as Bangkok wall clock. Every
 -- listed value >= :cutover_bkk is shifted back by 7 hours.
 --
@@ -20,11 +21,25 @@
 --
 -- Idempotency: one transaction; aborts if an "AuditLog" row with action
 -- 'UTC timestamp repair' exists, and inserts that row when done.
+-- Fixed-build guard: aborts if "LineGroup"."enabledSince" is already timestamptz,
+-- i.e. the fixed build has started and run 202611210001_timestamptz.
 
 \set ON_ERROR_STOP on
 BEGIN;
 -- psql would otherwise inherit the server's Asia/Bangkok and our own NOW() would be +7h.
 SET LOCAL timezone = 'UTC';
+
+DO $$
+BEGIN
+  IF (SELECT data_type FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'LineGroup' AND column_name = 'enabledSince')
+     <> 'timestamp without time zone' THEN
+    RAISE EXCEPTION 'timestamptz migration has already run (fixed build started); this repair must not run';
+  END IF;
+  IF EXISTS (SELECT 1 FROM "AuditLog" WHERE "action" = 'UTC timestamp repair') THEN
+    RAISE EXCEPTION 'UTC timestamp repair already applied; refusing to run twice';
+  END IF;
+END $$;
 
 -- Preview: rows that will be shifted, per column.
 SELECT 'LineGroup.enabledSince' AS "column", count(*) AS rows_affected FROM "LineGroup" WHERE "enabledSince" >= :'cutover_bkk'::timestamp
@@ -62,13 +77,6 @@ UNION ALL
 SELECT 'OutboxEvent.availableAt' AS "column", count(*) AS rows_affected FROM "OutboxEvent" WHERE "availableAt" >= :'cutover_bkk'::timestamp
 UNION ALL
 SELECT 'OutboxEvent.publishedAt' AS "column", count(*) AS rows_affected FROM "OutboxEvent" WHERE "publishedAt" >= :'cutover_bkk'::timestamp;
-
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM "AuditLog" WHERE "action" = 'UTC timestamp repair') THEN
-    RAISE EXCEPTION 'UTC timestamp repair already applied; refusing to run twice';
-  END IF;
-END $$;
 
 UPDATE "LineGroup" SET
     "enabledSince" = CASE WHEN "enabledSince" >= :'cutover_bkk'::timestamp THEN "enabledSince" - interval '7 hours' ELSE "enabledSince" END,
@@ -117,6 +125,10 @@ VALUES (gen_random_uuid()::text, 'UTC timestamp repair', 'system', 'timestamps',
         jsonb_build_object('cutover_bkk', :'cutover_bkk', 'shift', '-7 hours'), NOW());
 
 \if :{?apply}
+\else
+\set apply false
+\endif
+\if :apply
 COMMIT;
 \else
 ROLLBACK;

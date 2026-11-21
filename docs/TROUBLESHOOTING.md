@@ -44,4 +44,4 @@ Production run, in this order. The cutover is the time the Go backend first ran,
 2. Stop `api` and `worker`.
 3. Dry run: `psql -v cutover_bkk='<cutover, YYYY-MM-DD HH:MM:SS>' -U <user> -d <database> -f scripts/repair/2026-11-21-utc-timestamps.sql`. It prints the per-column preview, then rolls back and changes nothing. Check the counts against what you expect for that cutover. A wrong cutover otherwise commits a silent shift that only the step-1 backup can undo.
 4. Apply: rerun the same command with `-v apply=1` added. It commits; a failure rolls everything back.
-5. Deploy and start the build that pins the session timezone to UTC.
+5. Deploy and start the fixed build. On startup the API migrates every timestamp column to `timestamptz` (`202611210001_timestamptz`). After that the repair refuses to run and cannot be redone safely.
