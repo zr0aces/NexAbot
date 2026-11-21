@@ -1,6 +1,6 @@
 # Audit 2 Remediation (AUD2-001 to AUD2-012) Implementation Plan
 
-**Status:** 2026-11-21 — planned. Nothing shipped. All tasks below remain.
+**Status:** 2026-11-21 — shipped in PR #13 (merge `8672e2a`): all 14 tasks plus final-review fixes. Remaining before production deploy: rehearse the UTC repair on a restored backup, confirm the proxy sends `X-Forwarded-For`, then run the repair with `api` and `worker` stopped before starting the new build. Deferred follow-ups are listed in the PR description.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -10,7 +10,7 @@
 
 **Tech Stack:** Go 1.27 (pgx v5, go-redis, `golang.org/x/sync`), React 19 + TanStack Query, Nginx unprivileged, PostgreSQL 18, Redis 7, GitHub Actions.
 
-**Spec:** [`docs/audit/2026-11-21-audit-report.md`](../audit/2026-11-21-audit-report.md). Each finding's "Recommended fix" is the requirement; this plan records the decisions the report leaves open.
+**Spec:** [`docs/audit/2026-11-21-audit-report.md`](../../audit/2026-11-21-audit-report.md). Each finding's "Recommended fix" is the requirement; this plan records the decisions the report leaves open.
 
 ## Line references
 
