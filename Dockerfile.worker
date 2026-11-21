@@ -5,7 +5,8 @@ RUN go mod download
 COPY packages/database/migrations packages/database/migrations
 COPY cmd cmd
 COPY internal internal
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/rivosnap ./cmd/rivosnap
+RUN mkdir -p internal/web/dist && touch internal/web/dist/.keep && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/rivosnap ./cmd/rivosnap
 
 FROM alpine:3.21 AS runtime
 RUN apk add --no-cache ca-certificates ffmpeg tzdata && \
