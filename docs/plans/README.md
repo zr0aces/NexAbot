@@ -4,10 +4,10 @@ Add a link under **Active** when a plan is created; move it to **Completed** whe
 
 ## Active
 
-- [Audit 2 Remediation (AUD2-001 to AUD2-012)](2026-11-21-audit2-remediation.md) — Fix all findings from the 2026-11-21 audit, starting with the UTC session-timezone ingestion blackout.
 
 ## Completed
 
+- [Audit 2 Remediation (AUD2-001 to AUD2-012)](completed/2026-11-21-audit2-remediation.md) — Fix all findings from the 2026-11-21 audit, starting with the UTC session-timezone ingestion blackout.
 - [Frontend design refactor](completed/2026-11-20-frontend-design-refactor.md) — Darkroom Contact Sheet & Archival Ledger UI refactor across all `apps/web` pages.
 - [Video collection support](completed/2026-11-20-video-collection-support.md) — Ingest, process (`ffmpeg`), upload, and play back LINE group videos.
 - [Production-compatible embedded migration runner](completed/2026-11-21-production-auto-migrations.md) — Embed ordered SQL migrations in Go binary with `_prisma_migrations` ledger continuity, advisory locking, and automatic startup execution.
