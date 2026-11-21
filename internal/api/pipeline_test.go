@@ -706,7 +706,7 @@ func TestFullPipelineIntegration(t *testing.T) {
 
 }
 
-func crashLoopFixture(t *testing.T, state string) (*db.DB, *worker.Processor, string, string) {
+func crashLoopFixture(t *testing.T, state string, attempts int) (*db.DB, *worker.Processor, string, string) {
 	t.Helper()
 	if os.Getenv("GALLERY_INTEGRATION") == "" {
 		t.Skip("skipping integration test; set GALLERY_INTEGRATION=1")
@@ -744,7 +744,7 @@ func crashLoopFixture(t *testing.T, state string) (*db.DB, *worker.Processor, st
 		{`INSERT INTO "Image" ("id", "lineGroupId", "channelId", "lineMessageId", "lineEventTimestamp", "uploadStatus", "updatedAt") VALUES ($1, $2, 'channel', $3, NOW(), $4::"UploadState", NOW())`, []any{imageID, lineGroupID, uuid.NewString(), state}},
 		{`INSERT INTO "OutboxEvent" ("id", "eventType", "aggregateId", "payload", "createdAt", "availableAt") VALUES ($1, 'PROCESS', $2, '{}'::jsonb, NOW(), NOW())`, []any{outboxID, imageID}},
 	}
-	for n := 1; n <= 3; n++ {
+	for n := 1; n <= attempts; n++ {
 		stmts = append(stmts, struct {
 			sql  string
 			args []any
@@ -760,7 +760,7 @@ func crashLoopFixture(t *testing.T, state string) (*db.DB, *worker.Processor, st
 
 func assertCrashLoopStopped(t *testing.T, state, wantStatus string) {
 	ctx := context.Background()
-	database, proc, imageID, outboxID := crashLoopFixture(t, state)
+	database, proc, imageID, outboxID := crashLoopFixture(t, state, 3)
 	if err := proc.ProcessEvent(ctx, outboxID); err != nil {
 		t.Fatalf("ProcessEvent: %v", err)
 	}
@@ -795,4 +795,40 @@ func TestCrashLoopEndsInFailed(t *testing.T) {
 
 func TestCrashLoopInCreatingMediaGoesToReview(t *testing.T) {
 	assertCrashLoopStopped(t, "CREATING_MEDIA", "NEEDS_REVIEW")
+}
+
+// A crash after Stage kept undecodable bytes but before the failure commit leaves
+// the file at the staging path with "stagingPath" NULL; it must stay discardable.
+func assertOrphanQuarantined(t *testing.T, attempts int, wantStatus, wantCode string) {
+	ctx := context.Background()
+	database, proc, imageID, outboxID := crashLoopFixture(t, "DOWNLOADING", attempts)
+	path, err := proc.Store.PathFor(imageID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not a photo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := proc.ProcessEvent(ctx, outboxID); err != nil {
+		t.Fatalf("ProcessEvent: %v", err)
+	}
+	var status, code string
+	var kept *string
+	if err := database.Pool.QueryRow(ctx, `SELECT "uploadStatus"::text, "errorCode", "stagingPath" FROM "Image" WHERE id = $1`, imageID).Scan(&status, &code, &kept); err != nil {
+		t.Fatal(err)
+	}
+	if status != wantStatus || code != wantCode || kept == nil || *kept != path {
+		t.Fatalf("expected %s/%s with stagingPath %s, got %s/%s %v", wantStatus, wantCode, path, status, code, kept)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("original missing: %v", err)
+	}
+}
+
+func TestRestageInspectFailureKeepsStagingPath(t *testing.T) {
+	assertOrphanQuarantined(t, 0, "UNRECOVERABLE", "UNSUPPORTED_IMAGE")
+}
+
+func TestCrashLoopKeepsStagedFileDiscardable(t *testing.T) {
+	assertOrphanQuarantined(t, 3, "FAILED", "WORKER_INTERRUPTED")
 }

@@ -402,6 +402,7 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 						staged, err = media.Inspect(path)
 					}
 					if err != nil {
+						quarantinePath = &path
 						return err
 					}
 					staged.StagingPath = path
@@ -580,6 +581,12 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 
 	var runErr error
 	if crashLoop {
+		// A kill between Stage's rename and the failure commit leaves the file unreferenced.
+		if path, err := p.Store.PathFor(id, 0); err == nil {
+			if _, statErr := os.Stat(path); statErr == nil {
+				quarantinePath = &path
+			}
+		}
 		runErr = model.NewFault("WORKER_INTERRUPTED", "Processing was interrupted repeatedly. Check worker memory and logs before retrying.", false, 0)
 	} else {
 		runErr = run()
