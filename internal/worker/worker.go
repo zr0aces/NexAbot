@@ -612,7 +612,7 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 		return err
 	}
 	if next == model.StateRetryPending {
-		avail := time.Now().Add(time.Duration(model.Backoff(n, f.Delay)) * time.Millisecond)
+		avail := time.Now().UTC().Add(time.Duration(model.Backoff(n, f.Delay)) * time.Millisecond)
 		if _, err := tx.Exec(
 			ctx,
 			`INSERT INTO "OutboxEvent" ("id", "eventType", "aggregateId", "payload", "createdAt", "availableAt")

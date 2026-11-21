@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-pg=$(docker run -d --rm -e POSTGRES_PASSWORD=fixture -e POSTGRES_DB=gallery -p 127.0.0.1::5432 postgres:18)
+pg=$(docker run -d --rm -e TZ=Asia/Bangkok -e POSTGRES_PASSWORD=fixture -e POSTGRES_DB=gallery -p 127.0.0.1::5432 postgres:18)
 redis=""
 trap 'docker stop "$pg" ${redis:+"$redis"} >/dev/null' EXIT
 redis=$(docker run -d --rm -p 127.0.0.1::6379 redis:7-alpine)

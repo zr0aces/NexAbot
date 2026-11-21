@@ -106,3 +106,22 @@ func TestMigrationLifecycleIntegration(t *testing.T) {
 		t.Fatalf("expected %d recorded migrations on fresh DB, got %d (err=%v)", len(list), count, err)
 	}
 }
+
+func TestSessionTimezoneIsUTC(t *testing.T) {
+	if os.Getenv("GALLERY_INTEGRATION") == "" {
+		t.Skip("skipping timezone integration test; set GALLERY_INTEGRATION=1")
+	}
+	ctx := context.Background()
+	database, err := db.Connect(ctx, config.Env{DatabaseURL: os.Getenv("DATABASE_URL")})
+	if err != nil {
+		t.Fatalf("db.Connect: %v", err)
+	}
+	defer database.Close()
+	var tz string
+	if err := database.Pool.QueryRow(ctx, `SHOW timezone`).Scan(&tz); err != nil {
+		t.Fatalf("SHOW timezone: %v", err)
+	}
+	if tz != "UTC" {
+		t.Fatalf("expected session timezone UTC, got %q", tz)
+	}
+}

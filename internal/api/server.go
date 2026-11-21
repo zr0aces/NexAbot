@@ -1878,7 +1878,7 @@ func (s *Server) handleDashboardStats(w http.ResponseWriter, r *http.Request) {
 	_ = s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "Image" WHERE "uploadStatus" NOT IN ('SYNCED'::"UploadState", 'NEEDS_REVIEW'::"UploadState", 'FAILED'::"UploadState", 'UNRECOVERABLE'::"UploadState")`).Scan(&pending)
 	_ = s.DB.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "LineGroup" WHERE "enabled" = true`).Scan(&groups)
 
-	warnCutoff := time.Now().Add(-time.Duration(policy.FailedDays-1) * 24 * time.Hour)
+	warnCutoff := time.Now().UTC().Add(-time.Duration(policy.FailedDays-1) * 24 * time.Hour)
 	_ = s.DB.Pool.QueryRow(
 		ctx,
 		`SELECT COUNT(*) FROM "Image" WHERE "uploadStatus" <> 'SYNCED'::"UploadState" AND "stagingPath" IS NOT NULL AND "createdAt" <= $1`,

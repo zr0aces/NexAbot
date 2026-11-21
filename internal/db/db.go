@@ -29,7 +29,13 @@ type DB struct {
 }
 
 func Connect(ctx context.Context, env config.Env) (*DB, error) {
-	pool, err := pgxpool.New(ctx, env.DatabaseURL)
+	cfg, err := pgxpool.ParseConfig(env.DatabaseURL)
+	if err != nil {
+		return nil, err
+	}
+	// Pin UTC so timestamp(3) columns compare correctly regardless of the server's TZ.
+	cfg.ConnConfig.RuntimeParams["timezone"] = "UTC"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
