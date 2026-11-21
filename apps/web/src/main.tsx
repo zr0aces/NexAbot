@@ -210,6 +210,7 @@ function Login({ setup }: { setup: boolean }) {
 }
 
 function App() {
+  const [logoutFailed, setLogoutFailed] = useState(false);
   const [dark, theme] = useState(
     () => localStorage.getItem("gallery-theme") === "dark",
   );
@@ -238,7 +239,13 @@ function App() {
   if (!auth.data.authenticated) return <Login setup={auth.data.setup} />;
 
   const signOut = async () => {
-    await api("/auth/logout", "POST");
+    setLogoutFailed(false);
+    try {
+      await api("/auth/logout", "POST");
+    } catch {
+      setLogoutFailed(true);
+      return;
+    }
     qc.clear();
     location.assign("/");
   };
@@ -313,6 +320,7 @@ function App() {
             {dark ? <Sun size={16} /> : <Moon size={16} />}
           </Button>
         </header>
+        {logoutFailed && <p role="alert">Sign-out could not be confirmed. Try again.</p>}
         <Routes>
           <Route index element={<Dashboard />} />
           <Route path="gallery" element={<Library key="gallery" />} />

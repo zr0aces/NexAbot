@@ -27,6 +27,7 @@ import (
 
 	"rivosnap/internal/api"
 	"rivosnap/internal/config"
+	"rivosnap/internal/crypto"
 	"rivosnap/internal/db"
 	"rivosnap/internal/google"
 	"rivosnap/internal/media"
@@ -265,16 +266,37 @@ func TestFullPipelineIntegration(t *testing.T) {
 		t.Fatalf("expected 0 images for video (disabled) and direct user message, got %d", imgCount)
 	}
 
-	sendWebhook([]map[string]any{
-		mkEvent("message", "img", "image", "group"),
-		mkEvent("message", "img", "image", "group"),
-		mkEvent("message", "other-event", "image", "group"),
-	}, true)
+	// Simulate a delayed webhook without clock-dependent sleeps.
+	if _, err := database.Pool.Exec(ctx, `UPDATE "LineGroup" SET "membershipAt"=NOW()-interval '3 hours', "enabledSince"=NOW()-interval '2 hours' WHERE id=$1`, groupUUID); err != nil {
+		t.Fatal(err)
+	}
+	delayed := mkEvent("message", "img", "image", "group")
+	delayed["timestamp"] = time.Now().Add(-time.Hour).UnixMilli()
+	if res := doReq("PATCH", "/api/v1/groups/"+groupUUID, headers, map[string]bool{"enabled": true}); res.Code != 200 {
+		t.Fatal(res.Body.String())
+	}
+	duplicate := mkEvent("message", "other-event", "image", "group")
+	duplicate["timestamp"] = delayed["timestamp"]
+	sendWebhook([]map[string]any{delayed, delayed, duplicate}, true)
+
 	_ = database.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "Image"`).Scan(&imgCount)
 	if imgCount != 1 {
 		t.Fatalf("expected 1 deduplicated image, got %d", imgCount)
 	}
 
+	for _, enabled := range []bool{false, true} {
+		if res := doReq("PATCH", "/api/v1/groups/"+groupUUID, headers, map[string]bool{"enabled": enabled}); res.Code != 200 {
+			t.Fatal(res.Body.String())
+		}
+	}
+	delayed["webhookEventId"] = "prior-window"
+	delayed["message"] = map[string]any{"type": "image", "id": "prior-window"}
+	if res := sendWebhook([]map[string]any{delayed}, true); res.Code != 200 {
+		t.Fatal(res.Body.String())
+	}
+	if err := database.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "Image"`).Scan(&imgCount); err != nil || imgCount != 1 {
+		t.Fatalf("old window accepted: count=%d err=%v", imgCount, err)
+	}
 	pngBytes := makeTestPNG(t)
 	var (
 		mu                sync.Mutex
@@ -349,6 +371,9 @@ func TestFullPipelineIntegration(t *testing.T) {
 				Header:     http.Header{"Content-Type": []string{"video/mp4"}},
 				Body:       io.NopCloser(strings.NewReader("full-video")),
 			}, nil
+		}
+		if strings.Contains(u, "api-data.line.me") && curMode == "preparing" {
+			return jsonResponse(202, map[string]any{}), nil
 		}
 		if strings.Contains(u, "api-data.line.me") && curMode == "throttle" {
 			return &http.Response{
@@ -464,6 +489,20 @@ func TestFullPipelineIntegration(t *testing.T) {
 	}
 
 	runNextOutbox() // GROUP_SUMMARY
+	mode = "preparing"
+	runNextOutbox()
+	var pendingID string
+	if err := database.Pool.QueryRow(ctx, `SELECT id FROM "Image" WHERE "uploadStatus"='RETRY_PENDING' AND "stagingPath" IS NULL AND "errorCode"='LINE_PREPARING'`).Scan(&pendingID); err != nil {
+		t.Fatal(err)
+	}
+	pendingPath, err := store.PathFor(pendingID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(pendingPath); !os.IsNotExist(err) {
+		t.Fatalf("preparation response staged: %v", err)
+	}
+	mode = "success"
 	runNextOutbox() // PROCESS (download & stage)
 
 	var stagedID, stagedMime string
@@ -957,7 +996,7 @@ func integrationServer(t *testing.T) integrationEnv {
 	return integrationEnv{ctx, database, store, handler, session, temp, env}
 }
 
-func thumbnailFixture(t *testing.T) (get func(ctx context.Context, id string) *httptest.ResponseRecorder, seed func() string, ffmpegLog string) {
+func thumbnailFixture(t *testing.T, remote bool) (get func(ctx context.Context, id string) *httptest.ResponseRecorder, seed func() string, ffmpegLog string) {
 	t.Helper()
 	srv := integrationServer(t)
 	ctx, database, store, handler, session, temp := srv.ctx, srv.db, srv.store, srv.handler, srv.session, srv.dir
@@ -988,8 +1027,41 @@ func thumbnailFixture(t *testing.T) (get func(ctx context.Context, id string) *h
 	if _, err := database.Pool.Exec(ctx, `INSERT INTO "LineGroup" ("id", "lineGroupId", "enabled", "membershipAt", "lastEventAt", "updatedAt") VALUES ($1, $2, true, NOW(), NOW(), NOW())`, uuid.NewString(), lineGroupID); err != nil {
 		t.Fatalf("seed group: %v", err)
 	}
+	if remote {
+		encrypted, err := crypto.Seal("fixture", database.Env.TokenEncryptionKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.Pool.Exec(ctx, `INSERT INTO "GoogleConnection" ("ownerId","scopes","status","encryptedRefreshToken") VALUES(1,'','CONNECTED',$1)`, encrypted); err != nil {
+			t.Fatal(err)
+		}
+		var seen sync.Map
+		previous := http.DefaultTransport
+		t.Cleanup(func() { http.DefaultTransport = previous })
+		http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Host {
+			case "oauth2.googleapis.com":
+				return jsonResponse(200, map[string]string{"access_token": "token"}), nil
+			case "photoslibrary.googleapis.com":
+				if _, duplicate := seen.LoadOrStore(req.URL.Path, true); duplicate {
+					t.Errorf("duplicate remote fetch: %s", req.URL.Path)
+				}
+				return jsonResponse(200, map[string]string{"id": "item", "baseUrl": "https://lh3.googleusercontent.com/item"}), nil
+			case "lh3.googleusercontent.com":
+				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"image/webp"}}, Body: io.NopCloser(bytes.NewReader(buf.Bytes()))}, nil
+			}
+			return nil, fmt.Errorf("unexpected host %q", req.URL.Host)
+		})
+	}
 	seed = func() string {
 		id := uuid.NewString()
+		if remote {
+			if _, err := database.Pool.Exec(ctx, `INSERT INTO "Image" ("id","lineGroupId","channelId","lineMessageId","lineEventTimestamp","uploadStatus","googleMediaItemId","updatedAt") VALUES($1,$2,'channel',$1,NOW(),'SYNCED',$1,NOW())`, id, lineGroupID); err != nil {
+				t.Fatal(err)
+			}
+			return id
+		}
+
 		path, err := store.PathFor(id, 0)
 		if err != nil {
 			t.Fatal(err)
@@ -1013,7 +1085,13 @@ func thumbnailFixture(t *testing.T) (get func(ctx context.Context, id string) *h
 }
 
 func TestThumbnailConcurrencyBounded(t *testing.T) {
-	get, seed, ffmpegLog := thumbnailFixture(t)
+	for _, remote := range []bool{false, true} {
+		t.Run(fmt.Sprintf("remote=%t", remote), func(t *testing.T) { checkThumbnailConcurrency(t, remote) })
+	}
+}
+
+func checkThumbnailConcurrency(t *testing.T, remote bool) {
+	get, seed, ffmpegLog := thumbnailFixture(t, remote)
 
 	fanOut := func(ids []string) {
 		t.Helper()
@@ -1077,7 +1155,7 @@ func TestThumbnailConcurrencyBounded(t *testing.T) {
 
 // A departing leader must neither fail the callers sharing its flight nor block on it.
 func TestThumbnailLeaderCancelDoesNotFailFollower(t *testing.T) {
-	get, seed, ffmpegLog := thumbnailFixture(t)
+	get, seed, ffmpegLog := thumbnailFixture(t, false)
 	id := seed()
 
 	leaderCtx, cancelLeader := context.WithCancel(context.Background())
@@ -1397,15 +1475,37 @@ func TestGoogleCallbackAlbumCheckFailureRedirects(t *testing.T) {
 			return jsonResponse(200, map[string]any{}), nil
 		}
 	})
-	connect := apiRequest(srv.handler, "GET", "/api/v1/google/connect", "", srv.session)
-	loc, err := url.Parse(connect.Header().Get("Location"))
-	if err != nil || loc.Query().Get("state") == "" {
-		t.Fatalf("connect did not return a state: %d %q", connect.Code, connect.Header().Get("Location"))
+	check := func() {
+		t.Helper()
+		connect := apiRequest(srv.handler, "GET", "/api/v1/google/connect", "", srv.session)
+		loc, err := url.Parse(connect.Header().Get("Location"))
+		if err != nil || loc.Query().Get("state") == "" {
+			t.Fatalf("connect did not return a state: %d %q", connect.Code, connect.Header().Get("Location"))
+		}
+		rec := apiRequest(srv.handler, "GET", "/api/v1/google/callback?code=c&state="+loc.Query().Get("state"), "", srv.session)
+		if rec.Code != 302 || rec.Header().Get("Location") != "/settings?google_error=exchange" {
+			t.Fatalf("expected 302 to /settings?google_error=exchange, got %d %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+		}
 	}
-	rec := apiRequest(srv.handler, "GET", "/api/v1/google/callback?code=c&state="+loc.Query().Get("state"), "", srv.session)
-	if rec.Code != 302 || rec.Header().Get("Location") != "/settings?google_error=exchange" {
-		t.Fatalf("expected 302 to /settings?google_error=exchange, got %d %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	check()
+	// A lookup error is not an empty mapping. Keep the previous connection intact.
+	if _, err := srv.db.Pool.Exec(srv.ctx, `INSERT INTO "GoogleConnection" ("ownerId","scopes","status","encryptedRefreshToken") VALUES(1,'','CONNECTED','original')`); err != nil {
+		t.Fatal(err)
 	}
+	if _, err := srv.db.Pool.Exec(srv.ctx, `ALTER TABLE "LineGroup" RENAME COLUMN "googleAlbumId" TO "unavailableAlbumId"`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := srv.db.Pool.Exec(srv.ctx, `ALTER TABLE "LineGroup" RENAME COLUMN "unavailableAlbumId" TO "googleAlbumId"`); err != nil {
+			t.Error(err)
+		}
+	})
+	check()
+	var saved string
+	if err := srv.db.Pool.QueryRow(srv.ctx, `SELECT "encryptedRefreshToken" FROM "GoogleConnection" WHERE id=1`).Scan(&saved); err != nil || saved != "original" {
+		t.Fatalf("lookup failure replaced connection: err=%v", err)
+	}
+
 }
 
 func TestCleanupPrunesOldAttemptsAndAuditLogs(t *testing.T) {
@@ -1491,5 +1591,35 @@ func TestHealthReportsWorkerLastProgress(t *testing.T) {
 	}
 	if got := health()["workerLastProgressAt"]; got != ts {
 		t.Fatalf("workerLastProgressAt = %v, want %s", got, ts)
+	}
+}
+
+func TestLogoutRevocationFailure(t *testing.T) {
+	srv := integrationServer(t)
+	opts, err := redis.ParseURL(srv.db.Env.RedisURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := redis.NewClient(opts)
+	defer admin.Close()
+	username := "logoutfixture"
+	if err := admin.Do(srv.ctx, "ACL", "SETUSER", username, "on", ">test-only", "~*", "+@all", "-del").Err(); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Do(srv.ctx, "ACL", "DELUSER", username)
+	opts.Username, opts.Password = username, "test-only"
+	restricted := redis.NewClient(opts)
+	defer restricted.Close()
+	handler := api.NewServer(srv.db.Env, srv.db, restricted, srv.store).Handler()
+	rec := apiRequest(handler, "POST", "/api/v1/auth/logout", "", srv.session)
+	if rec.Code != 500 || rec.Header().Get("Set-Cookie") != "" {
+		t.Fatalf("failed revocation cleared session: %d %v", rec.Code, rec.Result().Cookies())
+	}
+	rec = apiRequest(srv.handler, "POST", "/api/v1/auth/logout", "", srv.session)
+	if rec.Code != 200 {
+		t.Fatalf("retry logout: %d", rec.Code)
+	}
+	if rec = apiRequest(srv.handler, "GET", "/api/v1/health", "", srv.session); rec.Code != 401 {
+		t.Fatalf("revoked cookie was accepted: %d", rec.Code)
 	}
 }

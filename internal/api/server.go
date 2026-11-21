@@ -84,30 +84,41 @@ const (
 
 var errThumbBusy = errors.New("thumbnail generation busy")
 
+type thumbnailResult struct {
+	path, mime string
+	data       []byte
+}
+
 // thumbnail generates a missing thumbnail, waiting up to thumbWaitTimeout for one of
 // maxThumbJobs slots. Waiters hold no ffmpeg process. The flight runs on a context
 // detached from the caller, so one departing client cannot fail the callers sharing it;
 // an abandoned flight still finishes and fills the cache.
-func (s *Server) thumbnail(ctx context.Context, id string, size int, kind string) (string, error) {
-	ch := s.thumbFlight.DoChan(id+":"+strconv.Itoa(size), func() (any, error) {
+func (s *Server) thumbnail(ctx context.Context, target string, generate func(context.Context) (thumbnailResult, error)) (thumbnailResult, error) {
+	ch := s.thumbFlight.DoChan(target, func() (any, error) {
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), thumbWaitTimeout+time.Minute)
 		defer cancel()
 		select {
 		case s.thumbSem <- struct{}{}:
 			defer func() { <-s.thumbSem }()
 		case <-fctx.Done():
-			return "", fctx.Err()
+			return nil, fctx.Err()
 		case <-time.After(thumbWaitTimeout):
-			return "", errThumbBusy
+			return nil, errThumbBusy
 		}
-		return s.Store.Thumbnail(fctx, id, size, kind)
+		if _, err := os.Stat(target); err == nil {
+			_ = media.Touch(target)
+			return thumbnailResult{path: target}, nil
+		}
+		return generate(fctx)
 	})
 	select {
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return thumbnailResult{}, ctx.Err()
 	case r := <-ch:
-		path, _ := r.Val.(string)
-		return path, r.Err
+		if r.Err != nil {
+			return thumbnailResult{}, r.Err
+		}
+		return r.Val.(thumbnailResult), nil
 	}
 }
 
@@ -349,7 +360,10 @@ func (s *Server) Handler() http.Handler {
 		ctx := r.Context()
 		sid := s.sid(r)
 		if sid != "" {
-			_ = s.Redis.Del(ctx, "session:"+sid).Err()
+			if err := s.Redis.Del(ctx, "session:"+sid).Err(); err != nil {
+				writeErr(w, err)
+				return
+			}
 		}
 		http.SetCookie(w, &http.Cookie{
 			Name:   "session",
@@ -840,7 +854,10 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var mappedAlbumID *string
-	_ = s.DB.Pool.QueryRow(ctx, `SELECT "googleAlbumId" FROM "LineGroup" WHERE "googleAlbumId" IS NOT NULL LIMIT 1`).Scan(&mappedAlbumID)
+	if err := s.DB.Pool.QueryRow(ctx, `SELECT "googleAlbumId" FROM "LineGroup" WHERE "googleAlbumId" IS NOT NULL LIMIT 1`).Scan(&mappedAlbumID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		fail("exchange")
+		return
+	}
 	if mappedAlbumID != nil && *mappedAlbumID != "" {
 		if _, err := google.Album(ctx, *mappedAlbumID, t.AccessToken); err != nil {
 			fail("exchange")
@@ -1047,7 +1064,7 @@ func (s *Server) handlePatchGroup(w http.ResponseWriter, r *http.Request) {
 	if *b.Enabled {
 		cmd, err = tx.Exec(
 			ctx,
-			`UPDATE "LineGroup" SET "enabled" = true, "enabledSince" = NOW(), "updatedAt" = NOW() WHERE id = $1 AND "membershipStatus" = 'JOINED'`,
+			`UPDATE "LineGroup" SET "enabled" = true, "enabledSince" = CASE WHEN "enabled" THEN COALESCE("enabledSince", NOW()) ELSE NOW() END, "updatedAt" = NOW() WHERE id = $1 AND "membershipStatus" = 'JOINED'`,
 			gid,
 		)
 	} else {
@@ -1616,12 +1633,33 @@ func (s *Server) handleMediaStream(w http.ResponseWriter, r *http.Request, thumb
 		return
 	}
 
-	if thumb && stagingPath != nil && *stagingPath != "" && (googleMediaItemID == nil || *googleMediaItemID == "") {
-		mediaKind := "IMAGE"
-		if mediaType == "VIDEO" {
-			mediaKind = "VIDEO"
-		}
-		tpath, err := s.thumbnail(ctx, imgID, size, mediaKind)
+	hasRemote := googleMediaItemID != nil && *googleMediaItemID != ""
+	if !hasRemote && (!thumb || stagingPath == nil || *stagingPath == "") {
+		writeJSON(w, 404, map[string]string{"error": "Image not available yet."})
+		return
+	}
+	if thumb {
+		result, err := s.thumbnail(ctx, localPath, func(ctx context.Context) (thumbnailResult, error) {
+			if !hasRemote {
+				path, err := s.Store.Thumbnail(ctx, imgID, size, mediaType)
+				return thumbnailResult{path: path}, err
+			}
+			remote, contentType, err := s.remoteMedia(ctx, *googleMediaItemID, mediaType, mimeType, size, "")
+			if err != nil {
+				return thumbnailResult{}, err
+			}
+			defer remote.Body.Close()
+			const limit = 10 << 20
+			buf, err := io.ReadAll(io.LimitReader(remote.Body, limit+1))
+			if err != nil || len(buf) > limit {
+				return thumbnailResult{}, model.NewFault("GOOGLE_MEDIA", "Google thumbnail is unavailable.", true, 0)
+			}
+			path, err := s.Store.CacheThumbnail(ctx, imgID, size, buf)
+			if err != nil {
+				return thumbnailResult{data: buf, mime: contentType}, nil
+			}
+			return thumbnailResult{path: path}, nil
+		})
 		if ctx.Err() != nil {
 			return // client gone; nothing to write
 		}
@@ -1634,7 +1672,12 @@ func (s *Server) handleMediaStream(w http.ResponseWriter, r *http.Request, thumb
 			writeErr(w, err)
 			return
 		}
-		f, err := os.Open(tpath)
+		if result.path == "" {
+			w.Header().Set("Content-Type", result.mime)
+			_, _ = w.Write(result.data)
+			return
+		}
+		f, err := os.Open(result.path)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -1646,104 +1689,12 @@ func (s *Server) handleMediaStream(w http.ResponseWriter, r *http.Request, thumb
 		return
 	}
 
-	if googleMediaItemID == nil || *googleMediaItemID == "" {
-		writeJSON(w, 404, map[string]string{"error": "Image not available yet."})
-		return
-	}
-
-	tok, err := s.DB.Access(ctx, false)
+	remote, outMime, err := s.remoteMedia(ctx, *googleMediaItemID, mediaType, mimeType, 0, r.Header.Get("Range"))
 	if err != nil {
 		writeErr(w, err)
-		return
-	}
-	m, err := google.Item(ctx, *googleMediaItemID, tok)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	parsedBase, err := url.Parse(m.BaseURL)
-	if err != nil || parsedBase.Scheme != "https" || !strings.HasSuffix(parsedBase.Hostname(), ".googleusercontent.com") {
-		writeErr(w, model.NewFault("GOOGLE_MEDIA", "Invalid remote media URL.", false, 0))
-		return
-	}
-
-	suffix := "=d"
-	if thumb {
-		suffix = fmt.Sprintf("=w%d-h%d", size, size)
-	} else if mediaType == "VIDEO" {
-		suffix = "=dv"
-	}
-
-	timeout := 60 * time.Second
-	if mediaType == "VIDEO" && !thumb {
-		timeout = 300 * time.Second
-	}
-	reqCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, m.BaseURL+suffix, nil)
-	if err != nil {
-		writeErr(w, model.NewFault("GOOGLE_MEDIA", "Google media is unavailable.", true, 0))
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+tok)
-	if !thumb && mediaType == "VIDEO" && rangeRe.MatchString(r.Header.Get("Range")) {
-		req.Header.Set("Range", r.Header.Get("Range"))
-	}
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	remote, err := client.Do(req)
-	if err != nil || remote.StatusCode < 200 || remote.StatusCode >= 300 {
-		if remote != nil {
-			remote.Body.Close()
-		}
-		writeErr(w, model.NewFault("GOOGLE_MEDIA", "Google media is unavailable.", true, 0))
 		return
 	}
 	defer remote.Body.Close()
-
-	remoteMime := strings.ToLower(strings.TrimSpace(strings.Split(remote.Header.Get("Content-Type"), ";")[0]))
-	allowedMimes := []string{
-		"image/jpeg", "image/webp", "image/png", "image/gif", "image/avif",
-		"video/mp4", "video/quicktime", "video/webm", "application/octet-stream",
-	}
-	if !slices.Contains(allowedMimes, remoteMime) {
-		writeErr(w, model.NewFault("GOOGLE_MEDIA", "Unexpected content type from Google.", false, 0))
-		return
-	}
-
-	outMime := remoteMime
-	if outMime == "application/octet-stream" {
-		if mimeType != nil && *mimeType != "" {
-			outMime = *mimeType
-		} else {
-			outMime = "image/jpeg"
-		}
-	}
-
-	if thumb {
-		buf, err := io.ReadAll(io.LimitReader(remote.Body, 10<<20))
-		if err != nil {
-			writeErr(w, model.NewFault("GOOGLE_MEDIA", "Google media is unavailable.", true, 0))
-			return
-		}
-		if cachedPath, err := s.Store.CacheThumbnail(ctx, imgID, size, buf); err == nil {
-			if f, err := os.Open(cachedPath); err == nil {
-				defer f.Close()
-				w.Header().Set("Content-Type", "image/webp")
-				w.WriteHeader(http.StatusOK)
-				_, _ = io.Copy(w, f)
-				return
-			}
-		}
-		w.Header().Set("Content-Type", outMime)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(buf)
-		return
-	}
-
 	if cr := remote.Header.Get("Content-Range"); cr != "" {
 		w.Header().Set("Content-Range", cr)
 	}
@@ -1763,6 +1714,76 @@ func (s *Server) handleMediaStream(w http.ResponseWriter, r *http.Request, thumb
 		w.WriteHeader(http.StatusOK)
 	}
 	_, _ = io.Copy(w, remote.Body)
+}
+
+func (s *Server) remoteMedia(ctx context.Context, mediaID, mediaType string, mimeType *string, size int, byteRange string) (*http.Response, string, error) {
+	tok, err := s.DB.Access(ctx, false)
+	if err != nil {
+		return nil, "", err
+	}
+	m, err := google.Item(ctx, mediaID, tok)
+	if err != nil {
+		return nil, "", err
+	}
+	parsedBase, err := url.Parse(m.BaseURL)
+	if err != nil || parsedBase.Scheme != "https" || !strings.HasSuffix(parsedBase.Hostname(), ".googleusercontent.com") {
+		return nil, "", model.NewFault("GOOGLE_MEDIA", "Invalid remote media URL.", false, 0)
+	}
+
+	thumb := size != 0
+	suffix := "=d"
+	if thumb {
+		suffix = fmt.Sprintf("=w%d-h%d", size, size)
+	} else if mediaType == "VIDEO" {
+		suffix = "=dv"
+	}
+
+	timeout := 60 * time.Second
+	if mediaType == "VIDEO" && !thumb {
+		timeout = 300 * time.Second
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.BaseURL+suffix, nil)
+	if err != nil {
+		return nil, "", model.NewFault("GOOGLE_MEDIA", "Google media is unavailable.", true, 0)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	if !thumb && mediaType == "VIDEO" && rangeRe.MatchString(byteRange) {
+		req.Header.Set("Range", byteRange)
+	}
+	client := &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	remote, err := client.Do(req)
+	if err != nil || remote.StatusCode < 200 || remote.StatusCode >= 300 {
+		if remote != nil {
+			remote.Body.Close()
+		}
+		return nil, "", model.NewFault("GOOGLE_MEDIA", "Google media is unavailable.", true, 0)
+	}
+
+	remoteMime := strings.ToLower(strings.TrimSpace(strings.Split(remote.Header.Get("Content-Type"), ";")[0]))
+	allowedMimes := []string{
+		"image/jpeg", "image/webp", "image/png", "image/gif", "image/avif",
+		"video/mp4", "video/quicktime", "video/webm", "application/octet-stream",
+	}
+	if !slices.Contains(allowedMimes, remoteMime) {
+		remote.Body.Close()
+		return nil, "", model.NewFault("GOOGLE_MEDIA", "Unexpected content type from Google.", false, 0)
+	}
+
+	outMime := remoteMime
+	if outMime == "application/octet-stream" {
+		if mimeType != nil && *mimeType != "" {
+			outMime = *mimeType
+		} else {
+			outMime = "image/jpeg"
+		}
+	}
+
+	return remote, outMime, nil
 }
 
 func (s *Server) handleDiscardJob(w http.ResponseWriter, r *http.Request) {
