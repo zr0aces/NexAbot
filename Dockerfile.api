@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim AS web-build
+FROM node:24.22.3-bookworm-slim AS web-build
 ENV PNPM_HOME=/opt/pnpm PATH=/opt/pnpm:$PATH
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 WORKDIR /app
@@ -8,7 +8,7 @@ COPY packages/ui packages/ui
 COPY scripts/version-control.mjs scripts/version-control.mjs
 RUN pnpm install --frozen-lockfile && pnpm build
 
-FROM golang:1.27-alpine AS build
+FROM golang:1.27.4-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -18,7 +18,7 @@ COPY internal internal
 COPY --from=web-build /app/apps/web/dist internal/web/dist
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/rivosnap ./cmd/rivosnap
 
-FROM alpine:3.21 AS runtime
+FROM alpine:3.21.10 AS runtime
 RUN apk add --no-cache ca-certificates ffmpeg tzdata && \
     addgroup -g 1000 node && adduser -u 1000 -G node -s /bin/sh -D node
 WORKDIR /app

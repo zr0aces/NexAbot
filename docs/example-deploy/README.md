@@ -4,7 +4,7 @@
 
 Copy **this entire directory** to a fresh Linux host, for example as `/opt/rivosnap`. It includes a standalone `compose.yml` tracking the `:latest` GHCR release images (or pin a specific `:<VERSION>` tag if desired), `web.conf` for Nginx, and an `env.example`. No other repository files, source checkout, or build tools are needed. The host needs Docker Engine, Compose v2, and an existing HTTPS reverse proxy.
 
-1. Confirm the publisher provides the two GHCR package names in `compose.yml` (`rivosnap-api` and `rivosnap-worker`) for your host architecture, using the tags shown in that file. The `web` service pulls the stock `nginxinc/nginx-unprivileged:stable-alpine` image directly. Change the example package paths if necessary. For private packages, sign in to `ghcr.io` with a read-only package credential using `docker login --password-stdin`.
+1. Confirm the publisher provides the two GHCR package names in `compose.yml` (`rivosnap-api` and `rivosnap-worker`) for your host architecture, using the tags shown in that file. The `web` service pulls the stock `nginxinc/nginx-unprivileged` image (pinned in `docker-compose.yml`) directly. Change the example package paths if necessary. For private packages, sign in to `ghcr.io` with a read-only package credential using `docker login --password-stdin`.
 2. From the copied directory, run `install -m 600 env.example .env` **once**, before adding secrets. Set the lowercase `GHCR_OWNER` (default `zr0aces`), `WEB_PORT` (default `8080`), and public HTTPS `APP_URL` (must start with `https://`, no trailing slash).
 3. Generate the four required secrets with `openssl rand -hex 32` (one 64-character hex string per field):
    - `POSTGRES_PASSWORD`: URL-safe hex password interpolated into `DATABASE_URL`

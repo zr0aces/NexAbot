@@ -2,13 +2,13 @@
 
 **Upgrading an existing installation?** Before running Compose, set `COMPOSE_PROJECT_NAME` in the deployment environment to the existing project name (shown by `docker compose ls`). The new default is `rivosnap`; changing the project name selects different volumes and can start an empty database. Keep the original environment and volumes.
 
-Publishing a GitHub Release tagged `v<root VERSION>` triggers the release workflow. It builds Linux/amd64 images for the API (with embedded React assets) and worker services and pushes them to `ghcr.io/<owner>/rivosnap-{api,worker}:<VERSION>` and `:latest`. The `web` service runs the upstream `nginxinc/nginx-unprivileged:stable-alpine` image directly with no custom build. Draft releases and tag pushes alone do not publish images.
+Publishing a GitHub Release tagged `v<root VERSION>` triggers the release workflow. It builds Linux/amd64 images for the API (with embedded React assets) and worker services and pushes them to `ghcr.io/<owner>/rivosnap-{api,worker}:<VERSION>` and `:latest`. The `web` service runs the upstream `nginxinc/nginx-unprivileged` image (pinned in `docker-compose.yml`) directly with no custom build. Draft releases and tag pushes alone do not publish images.
 
 To run published GHCR images on another server without a local build, see the [image deployment example](example-deploy/README.md).
 
 Use a supported Linux Docker Engine and Compose. Reserve space for database, Redis AOF, pending originals and disposable thumbnails. Restrict Docker access to trusted administrators. Keep the deployment environment and separately backed-up encryption key outside version control.
 
-The `web` service in `docker-compose.yml` uses the stock `nginxinc/nginx-unprivileged:stable-alpine` image, mounts `infra/docker/web.conf`, and proxies all traffic to `api:3000` (which serves both `/api/*` and the embedded React SPA). No custom `web` image build or override file is required. Start without the edge profile:
+The `web` service in `docker-compose.yml` uses the stock `nginxinc/nginx-unprivileged` image (pinned in `docker-compose.yml`), mounts `infra/docker/web.conf`, and proxies all traffic to `api:3000` (which serves both `/api/*` and the embedded React SPA). No custom `web` image build or override file is required. Start without the edge profile:
 
 ```sh
 docker compose up -d --build
@@ -38,6 +38,10 @@ docker compose build --pull
 docker compose up -d
 docker compose ps
 ```
+
+### Updating base images
+
+Every base image is pinned to an exact patch tag (`Dockerfile.api`, `Dockerfile.worker`, `infra/caddy/Dockerfile`, `docker-compose.yml`, `docs/example-deploy/compose.yml`), so a rebuild never silently picks up a different image. To update, look the new tag up in the registry, change the tag in every file that uses that image, and run `docker compose --profile edge config --quiet` and a local `docker build` of both Go images. Move the Go patch version in `.github/workflows/ci.yml` (`go-version`) and in the `golang:` tag of both Dockerfiles together. Keep PostgreSQL on major 18 unless you have a tested upgrade path for the data volume.
 
 Do not use down -v, erase cache mounts while uploads are active, or scale workers independently during migrations. Defaults use /data/staging and /data/thumbnails; if changing these paths also change mounts, ownership and server environment together. Containers run without root. Check the dashboard for cache usage, free space, retention warnings, oldest pending image and worker heartbeat.
 
