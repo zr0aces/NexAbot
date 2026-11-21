@@ -14,7 +14,7 @@
 | Disk pressure | Free unrelated files or expand the volume. Resolve uploads, wait for synced cleanup, or explicitly discard an expired stopped original after inspecting it. Do not manually delete active staging files. Discard is irreversible and never deletes Google Photos media. |
 | Cache miss | Synced images are served by resolving their Google IDs. Reconnect and Validate if remote reads fail. A manually deleted or moved remote item may no longer resolve. |
 | Stale worker | Check worker logs, Redis AOF volume and PostgreSQL readiness. Restart worker; unacknowledged outbox rows replay. Never flush production Redis or drop the outbox to clear the queue. |
-| Timestamps 7 hours ahead / first photos after enabling were missed | Older builds wrote database timestamps in Asia/Bangkok wall clock instead of UTC, so `enabledSince` and the outbox schedule ran 7 hours ahead. Run the one-off [UTC timestamp repair](#one-off-utc-timestamp-repair) during the deploy of the build that pins the session timezone to UTC. |
+| Timestamps 7 hours ahead / first photos after enabling were missed | Older builds wrote database timestamps in Asia/Bangkok wall clock instead of UTC, so `enabledSince` and the outbox schedule ran 7 hours ahead. Run the one-off [UTC timestamp repair](#one-off-utc-timestamp-repair) before starting the build that pins the session timezone to UTC, with `api` and `worker` stopped. |
 
 ## Check the network path
 
