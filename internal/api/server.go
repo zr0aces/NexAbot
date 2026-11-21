@@ -43,7 +43,6 @@ var (
 	rangeRe     = regexp.MustCompile(`^bytes=(\d*)-(\d*)$`)
 	digitsOnly  = regexp.MustCompile(`^\d+$`)
 	isoDateRe   = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
-	ctrlCharsRe = regexp.MustCompile(`[\x00-\x1f\x7f]`)
 )
 
 type httpError struct {
@@ -1105,25 +1104,15 @@ func (s *Server) handleRefreshGroup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, model.NewFault("LINE_CONFIG", "Configure LINE credentials first.", false, 0))
 		return
 	}
-	resp, err := line.Call(ctx, "group/"+url.PathEscape(lineGroupID)+"/summary", creds.Token, false, 90*time.Second)
+	displayName, err := line.GroupName(ctx, creds.Token, lineGroupID)
+	if errors.Is(err, line.ErrNoGroupName) {
+		writeErr(w, errBadRequest("Invalid request. Check the submitted values."))
+		return
+	}
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	defer resp.Body.Close()
-	var info struct {
-		GroupName string `json:"groupName"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil || info.GroupName == "" {
-		writeErr(w, errBadRequest("Invalid request. Check the submitted values."))
-		return
-	}
-	cleaned := strings.TrimSpace(ctrlCharsRe.ReplaceAllString(info.GroupName, " "))
-	runes := []rune(cleaned)
-	if len(runes) > 500 {
-		runes = runes[:500]
-	}
-	displayName := string(runes)
 	if displayName == "" {
 		writeErr(w, model.NewFault("LINE_SUMMARY", "LINE did not return a group name.", false, 0))
 		return

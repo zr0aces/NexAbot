@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"os"
@@ -195,23 +194,12 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 	if eventType == "GROUP_SUMMARY" {
 		creds, err := p.DB.LineCredentials(ctx)
 		if err == nil && creds.Token != "" {
-			resp, err := line.Call(ctx, "group/"+aggregateID+"/summary", creds.Token, false, 90*time.Second)
-			if err == nil {
-				var info struct {
-					GroupName string `json:"groupName"`
-				}
-				if json.NewDecoder(resp.Body).Decode(&info) == nil && info.GroupName != "" {
-					runes := []rune(info.GroupName)
-					if len(runes) > 500 {
-						runes = runes[:500]
-					}
-					_, _ = p.DB.Pool.Exec(
-						ctx,
-						`UPDATE "LineGroup" SET "displayName" = $1, "updatedAt" = NOW() WHERE "lineGroupId" = $2`,
-						string(runes), aggregateID,
-					)
-				}
-				resp.Body.Close()
+			if name, err := line.GroupName(ctx, creds.Token, aggregateID); err == nil && name != "" {
+				_, _ = p.DB.Pool.Exec(
+					ctx,
+					`UPDATE "LineGroup" SET "displayName" = $1, "updatedAt" = NOW() WHERE "lineGroupId" = $2`,
+					name, aggregateID,
+				)
 			}
 		}
 		return deleteOutbox()
@@ -501,20 +489,9 @@ func (p *Processor) ProcessEvent(ctx context.Context, outboxID string) error {
 				if g.DisplayName == nil || *g.DisplayName == "" {
 					creds, err := p.DB.LineCredentials(ctx)
 					if err == nil && creds.Token != "" {
-						if resp, err := line.Call(ctx, "group/"+g.LineGroupID+"/summary", creds.Token, false, 90*time.Second); err == nil {
-							var summary struct {
-								GroupName string `json:"groupName"`
-							}
-							if json.NewDecoder(resp.Body).Decode(&summary) == nil && summary.GroupName != "" {
-								runes := []rune(summary.GroupName)
-								if len(runes) > 500 {
-									runes = runes[:500]
-								}
-								s := string(runes)
-								_, _ = p.DB.Pool.Exec(ctx, `UPDATE "LineGroup" SET "displayName" = $1, "updatedAt" = NOW() WHERE id = $2`, s, g.ID)
-								g.DisplayName = &s
-							}
-							resp.Body.Close()
+						if name, err := line.GroupName(ctx, creds.Token, g.LineGroupID); err == nil && name != "" {
+							_, _ = p.DB.Pool.Exec(ctx, `UPDATE "LineGroup" SET "displayName" = $1, "updatedAt" = NOW() WHERE id = $2`, name, g.ID)
+							g.DisplayName = &name
 						}
 					}
 				}
