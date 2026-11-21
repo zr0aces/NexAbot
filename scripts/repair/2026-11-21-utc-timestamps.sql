@@ -7,6 +7,7 @@
 --
 -- Usage:
 --   psql -v cutover_bkk='YYYY-MM-DD HH:MM:SS' -U <user> -d <db> -f scripts/repair/2026-11-21-utc-timestamps.sql
+-- Default is a dry run (preview, then ROLLBACK). Add -v apply=1 to COMMIT.
 -- :cutover_bkk is the Go backend cutover time as Bangkok wall clock. Every
 -- listed value >= :cutover_bkk is shifted back by 7 hours.
 --
@@ -115,4 +116,9 @@ INSERT INTO "AuditLog" ("id", "action", "targetType", "targetId", "metadata", "c
 VALUES (gen_random_uuid()::text, 'UTC timestamp repair', 'system', 'timestamps',
         jsonb_build_object('cutover_bkk', :'cutover_bkk', 'shift', '-7 hours'), NOW());
 
+\if :{?apply}
 COMMIT;
+\else
+ROLLBACK;
+\echo 'Dry run: rolled back. Re-run with -v apply=1 to commit.'
+\endif

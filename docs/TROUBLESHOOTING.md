@@ -36,11 +36,12 @@ Applies once, to a database written by a build that ran in a Bangkok-timezone co
 
 **Never run it after the fixed build has started.** Pre-fix Bangkok values and post-fix UTC values overlap for 7 hours and cannot be told apart.
 
-Before the production run, the owner must rehearse on a restored copy of a recent backup (never the live database): run the script with the planned cutover, confirm that post-cutover `Image.createdAt` was about 7 hours after `lineEventTimestamp` before and within seconds after, and that pre-cutover rows were already within seconds of `lineEventTimestamp`. If legacy rows do not look UTC, adjust the cutover or column list and record why in the script header. Then rerun it and expect the `already applied` exception.
+Before the production run, the owner must rehearse on a restored copy of a recent backup (never the live database): run the script with the planned cutover and `-v apply=1`, confirm that post-cutover `Image.createdAt` was about 7 hours after `lineEventTimestamp` before and within seconds after, and that pre-cutover rows were already within seconds of `lineEventTimestamp`. If legacy rows do not look UTC, adjust the cutover or column list and record why in the script header. Then rerun it and expect the `already applied` exception.
 
 Production run, in this order. The cutover is the time the Go backend first ran, as Bangkok wall clock.
 
 1. Back up the database.
 2. Stop `api` and `worker`.
-3. Run `psql -v cutover_bkk='<cutover, YYYY-MM-DD HH:MM:SS>' -U <user> -d <database> -f scripts/repair/2026-11-21-utc-timestamps.sql`. Read the per-column preview it prints; a failure rolls everything back.
-4. Deploy and start the build that pins the session timezone to UTC.
+3. Dry run: `psql -v cutover_bkk='<cutover, YYYY-MM-DD HH:MM:SS>' -U <user> -d <database> -f scripts/repair/2026-11-21-utc-timestamps.sql`. It prints the per-column preview, then rolls back and changes nothing. Check the counts against what you expect for that cutover. A wrong cutover otherwise commits a silent shift that only the step-1 backup can undo.
+4. Apply: rerun the same command with `-v apply=1` added. It commits; a failure rolls everything back.
+5. Deploy and start the build that pins the session timezone to UTC.
