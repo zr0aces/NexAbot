@@ -17,10 +17,10 @@
 
 ## Check the network path
 
-These commands assume the default `WEB_PORT=8068`. If you changed it in `.env`, substitute the port shown by `docker compose ps web` in both HTTP checks and in the proxy upstream.
+These commands assume the default `WEB_PORT=8080`. If you configured a different `WEB_PORT` in `.env` (for example `8068`), substitute the port shown by `docker compose ps web` in both HTTP checks and in the proxy upstream.
 
-1. On the app host, run `docker compose ps` and `curl -fsS http://127.0.0.1:8068/api/v1/auth/status`. Expect HTTP 200 with setup and authentication flags; no credentials are needed.
-2. From the LAN proxy, run `curl -fsS http://192.168.8.70:8068/api/v1/auth/status`. If only this hop fails, check the host address, port binding, routing and firewall.
+1. On the app host, run `docker compose ps` and `curl -fsS http://127.0.0.1:8080/api/v1/auth/status`. Expect HTTP 200 with setup and authentication flags; no credentials are needed.
+2. From the LAN proxy, run `curl -fsS http://<host-ip>:8080/api/v1/auth/status`. If only this hop fails, check the host address, port binding, routing and firewall.
 3. From outside the LAN, set the shell variable `APP_URL` to the deployment’s public HTTPS origin, then run `curl -fsS "${APP_URL}/api/v1/auth/status"`. If DNS fails, check the public record. A certificate error points to proxy TLS configuration; a 502 generally points to the proxy's upstream. Do not fix these by exposing the published web port publicly or disabling secure cookies.
 
 ## First live acceptance

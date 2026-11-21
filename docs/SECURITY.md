@@ -1,6 +1,6 @@
 # Security and privacy
 
-- The proxy-to-web connection on the published web port (default 8068) uses plain HTTP. Allow access only from the proxy and trusted LAN clients; do not forward this port from the internet. Use the HTTPS hostname for passwords, the bootstrap key and authenticated media, even on the LAN.
+- The proxy-to-web connection on the published web port (`WEB_PORT`, default `8080`) uses plain HTTP. Allow access only from the proxy and trusted LAN clients; do not forward this port from the internet. Use the HTTPS hostname for passwords, the bootstrap key and authenticated media, even on the LAN.
 - Claiming the single owner requires an out-of-band bootstrap key, a unique singleton database row and a password of at least 12 characters. Passwords use Argon2id. The login endpoint is rate limited. Use a password manager.
 - Opaque signed session cookies are HttpOnly, SameSite=Lax and Secure in production. Redis sessions expire after 12 hours. Logout invalidates the server session. Browser writes require the configured exact Origin and a custom request header; cross-origin CORS is not enabled. OAuth state is separate, short-lived, single-use and session-bound.
 - Every image, thumbnail, configuration route and API document requires owner authentication. The webhook accepts no cookie authority: verify the HMAC of raw bytes. Public auth status exposes only setup and session flags. Readiness returns dependency availability without credentials.

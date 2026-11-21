@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -31,6 +33,7 @@ import (
 	"rivosnap/internal/line"
 	"rivosnap/internal/media"
 	"rivosnap/internal/model"
+	"rivosnap/internal/web"
 )
 
 var (
@@ -316,6 +319,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/jobs/{id}/discard", s.handleDiscardJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/retry", s.handleRetryJob)
 	mux.HandleFunc("GET /api/v1/dashboard/stats", s.handleDashboardStats)
+	mux.Handle("/api/", http.NotFoundHandler())
+	mux.Handle("/", newSPAHandler(web.Dist()))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -346,7 +351,10 @@ func (s *Server) Handler() http.Handler {
 					return
 				}
 			}
-			if urlPath != "/api/v1/auth/status" && urlPath != "/api/v1/auth/login" && urlPath != "/api/v1/auth/setup" {
+			if strings.HasPrefix(urlPath, "/api/") &&
+				urlPath != "/api/v1/auth/status" &&
+				urlPath != "/api/v1/auth/login" &&
+				urlPath != "/api/v1/auth/setup" {
 				if sid == "" {
 					writeJSON(w, 401, map[string]string{"error": "Sign in to continue."})
 					return
@@ -360,6 +368,26 @@ func (s *Server) Handler() http.Handler {
 		}
 
 		mux.ServeHTTP(w, r)
+	})
+}
+
+func newSPAHandler(dist fs.FS) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		clean := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		if clean != "" && clean != "." {
+			if info, err := fs.Stat(dist, clean); err == nil && !info.IsDir() {
+				if strings.HasPrefix(clean, "assets/") {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				}
+				http.ServeFileFS(w, r, dist, clean)
+				return
+			}
+		}
+		http.ServeFileFS(w, r, dist, "index.html")
 	})
 }
 

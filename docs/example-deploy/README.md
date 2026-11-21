@@ -2,17 +2,17 @@
 
 **Upgrading an existing installation?** Before running Compose, set `COMPOSE_PROJECT_NAME` in the deployment environment to the existing project name (shown by `docker compose ls`). The new default is `rivosnap`; changing the project name selects different volumes and can start an empty database. Keep the original environment and volumes.
 
-Copy **this entire directory** to a fresh Linux host, for example as `/opt/rivosnap`. It includes a standalone `compose.yml` tracking the `:latest` GHCR release images (or pin a specific `:<VERSION>` tag if desired) and an `env.example`. No other repository files, source checkout, or build tools are needed. The host needs Docker Engine, Compose v2, and an existing HTTPS reverse proxy.
+Copy **this entire directory** to a fresh Linux host, for example as `/opt/rivosnap`. It includes a standalone `compose.yml` tracking the `:latest` GHCR release images (or pin a specific `:<VERSION>` tag if desired), `web.conf` for Nginx, and an `env.example`. No other repository files, source checkout, or build tools are needed. The host needs Docker Engine, Compose v2, and an existing HTTPS reverse proxy.
 
-1. Confirm the publisher provides the three GHCR package names in `compose.yml` for your host architecture, using the tags shown in that file. Change the example package paths if necessary. For private packages, sign in to `ghcr.io` with a read-only package credential using `docker login --password-stdin`.
-2. From the copied directory, run `install -m 600 env.example .env` **once**, before adding secrets. Set the lowercase `GHCR_OWNER` (default `zr0aces`), public HTTPS `APP_URL` (must start with `https://`, no trailing slash), and the host’s `LAN_IP` (must exist on the host network interface, or set `0.0.0.0`).
+1. Confirm the publisher provides the two GHCR package names in `compose.yml` (`rivosnap-api` and `rivosnap-worker`) for your host architecture, using the tags shown in that file. The `web` service pulls the stock `nginxinc/nginx-unprivileged:stable-alpine` image directly. Change the example package paths if necessary. For private packages, sign in to `ghcr.io` with a read-only package credential using `docker login --password-stdin`.
+2. From the copied directory, run `install -m 600 env.example .env` **once**, before adding secrets. Set the lowercase `GHCR_OWNER` (default `zr0aces`), `WEB_PORT` (default `8080`), and public HTTPS `APP_URL` (must start with `https://`, no trailing slash).
 3. Generate the four required secrets with `openssl rand -hex 32` (one 64-character hex string per field):
    - `POSTGRES_PASSWORD`: URL-safe hex password interpolated into `DATABASE_URL`
    - `SESSION_SECRET`: at least 32 characters
    - `TOKEN_ENCRYPTION_KEY`: **must be exact 64 hex characters** (`/^[a-fA-F0-9]{64}$/`) for AES-256-GCM; keep backed up separately
    - `BOOTSTRAP_SECRET`: at least 24 characters (used once to claim the owner account)
 4. Configure `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` if using Google Photos OAuth (`LINE_CHANNEL_ACCESS_TOKEN` and `LINE_CHANNEL_SECRET` can also be saved later in the web UI under **Settings**).
-5. Forward HTTPS from the proxy to the loopback or trusted LAN listener on `WEB_PORT` (default 8068). Do not expose that HTTP port directly to the internet. Register the Google callback at `APP_URL/api/v1/google/callback`.
+5. Forward HTTPS from the proxy to the loopback or trusted LAN listener on `WEB_PORT` (default `8080`, configured in `.env`). Do not expose that HTTP port directly to the internet. Register the Google callback at `APP_URL/api/v1/google/callback`.
 
 Run from that directory in one shell:
 
