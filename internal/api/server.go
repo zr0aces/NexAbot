@@ -567,6 +567,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if s.DB.LineCredentialsUndecryptable() {
 		out["lineCredentials"] = "Undecryptable"
 	}
+	if lp, _ := s.Redis.Get(ctx, "worker:lastProgress").Result(); lp != "" {
+		out["workerLastProgressAt"] = lp
+	}
 	writeJSON(w, 200, out)
 }
 
@@ -1713,7 +1716,7 @@ func (s *Server) handleMediaStream(w http.ResponseWriter, r *http.Request, thumb
 	}
 
 	if thumb {
-		buf, err := io.ReadAll(remote.Body)
+		buf, err := io.ReadAll(io.LimitReader(remote.Body, 10<<20))
 		if err != nil {
 			writeErr(w, model.NewFault("GOOGLE_MEDIA", "Google media is unavailable.", true, 0))
 			return

@@ -1407,3 +1407,89 @@ func TestGoogleCallbackAlbumCheckFailureRedirects(t *testing.T) {
 		t.Fatalf("expected 302 to /settings?google_error=exchange, got %d %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
 	}
 }
+
+func TestCleanupPrunesOldAttemptsAndAuditLogs(t *testing.T) {
+	srv := integrationServer(t)
+	ctx := srv.ctx
+	groupID := "ret-" + uuid.NewString()
+	if _, err := srv.db.Pool.Exec(ctx, `INSERT INTO "LineGroup" ("id", "lineGroupId", "enabled", "membershipAt", "lastEventAt", "updatedAt") VALUES ($1, $2, true, NOW(), NOW(), NOW())`, uuid.NewString(), groupID); err != nil {
+		t.Fatal(err)
+	}
+	seedImage := func(status string) string {
+		id := uuid.NewString()
+		if _, err := srv.db.Pool.Exec(ctx, `INSERT INTO "Image" ("id", "lineGroupId", "channelId", "lineMessageId", "lineEventTimestamp", "uploadStatus", "googleMediaItemId", "updatedAt") VALUES ($1, $2, 'channel', $3, NOW(), $4::"UploadState", CASE WHEN $4 = 'SYNCED' THEN 'media' END, NOW())`, id, groupID, uuid.NewString(), status); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	attemptNo := 0
+	seedAttempt := func(imageID string, age time.Duration) string {
+		id := uuid.NewString()
+		attemptNo++
+		if _, err := srv.db.Pool.Exec(ctx, `INSERT INTO "UploadAttempt" ("id", "imageId", "attemptNumber", "status", "startedAt") VALUES ($1, $2, $3, 'DONE', $4)`, id, imageID, attemptNo, time.Now().UTC().Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	seedAudit := func(age time.Duration) string {
+		id := uuid.NewString()
+		if _, err := srv.db.Pool.Exec(ctx, `INSERT INTO "AuditLog" ("id", "action", "targetType", "targetId", "createdAt") VALUES ($1, 'x', 'image', 'y', $2)`, id, time.Now().UTC().Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	const day = 24 * time.Hour
+	synced, failed := seedImage("SYNCED"), seedImage("FAILED")
+	oldSynced, newSynced := seedAttempt(synced, 100*day), seedAttempt(synced, 10*day)
+	oldFailed := seedAttempt(failed, 100*day) // unsynced history is kept for diagnosis
+	oldAudit, newAudit := seedAudit(400*day), seedAudit(10*day)
+
+	proc := &worker.Processor{DB: srv.db, Store: srv.store}
+	if err := proc.Cleanup(ctx, time.Now()); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	exists := func(table, id string) bool {
+		var n int
+		if err := srv.db.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM "`+table+`" WHERE id = $1`, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n == 1
+	}
+	for _, c := range []struct {
+		table, id string
+		keep      bool
+	}{
+		{"UploadAttempt", oldSynced, false}, {"UploadAttempt", newSynced, true}, {"UploadAttempt", oldFailed, true},
+		{"AuditLog", oldAudit, false}, {"AuditLog", newAudit, true},
+	} {
+		if got := exists(c.table, c.id); got != c.keep {
+			t.Errorf("%s %s: exists=%v, want %v", c.table, c.id, got, c.keep)
+		}
+	}
+}
+
+func TestHealthReportsWorkerLastProgress(t *testing.T) {
+	srv := integrationServer(t)
+	health := func() map[string]any {
+		rec := apiRequest(srv.handler, "GET", "/api/v1/health", "", srv.session)
+		if rec.Code != 200 {
+			t.Fatalf("health %d: %s", rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return out
+	}
+	if _, ok := health()["workerLastProgressAt"]; ok {
+		t.Fatal("workerLastProgressAt must be omitted when the key is missing")
+	}
+	rOpts, _ := redis.ParseURL(srv.env.RedisURL)
+	rdb := redis.NewClient(rOpts)
+	defer rdb.Close()
+	const ts = "2026-11-21T01:02:03.123456789Z"
+	if err := rdb.Set(srv.ctx, "worker:lastProgress", ts, 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if got := health()["workerLastProgressAt"]; got != ts {
+		t.Fatalf("workerLastProgressAt = %v, want %s", got, ts)
+	}
+}

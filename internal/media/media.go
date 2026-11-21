@@ -67,7 +67,7 @@ func (s *Store) InitDirs() error {
 
 func (s *Store) PathFor(id string, size int) (string, error) {
 	if !uuidRe.MatchString(id) {
-		return "", errors.New("Invalid image ID")
+		return "", errors.New("invalid image ID")
 	}
 	if size > 0 {
 		return filepath.Join(s.Env.ThumbnailPath, fmt.Sprintf("%s.%d.webp", id, size)), nil

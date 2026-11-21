@@ -789,6 +789,7 @@ export function healthStatus(
   v: string | boolean,
 ): "ok" | "warn" | "err" {
   if (k === "diskPressure") return v === false ? "ok" : "warn";
+  if (k === "workerLastProgressAt") return "ok"; // informational timestamp
   if (v === "Online" || v === "PONG") return "ok";
   return "err";
 }
@@ -811,11 +812,13 @@ export function Health() {
               ? v
                 ? "Pressured"
                 : "Normal"
-              : String(v);
+              : k === "workerLastProgressAt"
+                ? new Date(String(v)).toLocaleString()
+                : String(v);
           return (
             <section className="healthCard" key={k}>
               <div className="row">
-                <b>{k}</b>
+                <b>{k === "workerLastProgressAt" ? "Last worker progress" : k}</b>
                 <span className={"pill " + state}>{display}</span>
               </div>
             </section>

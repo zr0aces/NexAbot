@@ -722,6 +722,11 @@ func (p *Processor) Cleanup(ctx context.Context, now time.Time) error {
 
 	webhookCutoff := now.Add(-90 * 24 * time.Hour)
 	_, _ = p.DB.Pool.Exec(ctx, `DELETE FROM "WebhookEvent" WHERE "receivedAt" < $1`, webhookCutoff)
+	attemptCutoff := now.Add(-90 * 24 * time.Hour)
+	_, _ = p.DB.Pool.Exec(ctx, `DELETE FROM "UploadAttempt" a USING "Image" i
+		WHERE a."imageId" = i.id AND i."uploadStatus" = 'SYNCED'::"UploadState" AND a."startedAt" < $1`, attemptCutoff)
+	auditCutoff := now.Add(-365 * 24 * time.Hour)
+	_, _ = p.DB.Pool.Exec(ctx, `DELETE FROM "AuditLog" WHERE "createdAt" < $1`, auditCutoff)
 	p.Store.ClearUsageCache()
 	return nil
 }
@@ -744,6 +749,9 @@ func (p *Processor) dispatch(ctx context.Context, conn *pgx.Conn) error {
 		}
 		if err := p.ProcessEvent(ctx, id); err != nil {
 			return err
+		}
+		if p.Redis != nil {
+			_ = p.Redis.Set(ctx, "worker:lastProgress", time.Now().UTC().Format(time.RFC3339Nano), 0).Err()
 		}
 	}
 	return nil
