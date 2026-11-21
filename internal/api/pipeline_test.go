@@ -832,3 +832,185 @@ func TestRestageInspectFailureKeepsStagingPath(t *testing.T) {
 func TestCrashLoopKeepsStagedFileDiscardable(t *testing.T) {
 	assertOrphanQuarantined(t, 3, "FAILED", "WORKER_INTERRUPTED")
 }
+
+// thumbnailFixture serves the real handler with a stub ffmpeg that logs "S" on start and
+// "E" on end (atomic O_APPEND lines), so overlap is read from log order, not timing.
+func thumbnailFixture(t *testing.T) (get func(id string) *httptest.ResponseRecorder, seed func() string, ffmpegLog string) {
+	t.Helper()
+	if os.Getenv("GALLERY_INTEGRATION") == "" {
+		t.Skip("skipping integration test; set GALLERY_INTEGRATION=1")
+	}
+	temp := t.TempDir()
+	binDir := filepath.Join(temp, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	buf.WriteString("RIFF")
+	vp8l := []byte{0x2f, 0x00, 0x00, 0x00, 0x00, 0x07, 0x10, 0xfd, 0x7f, 0x1d, 0x08, 0x00}
+	buf.Write([]byte{byte(12 + len(vp8l)), 0, 0, 0})
+	buf.WriteString("WEBPVP8L")
+	buf.Write([]byte{byte(len(vp8l)), 0, 0, 0})
+	buf.Write(vp8l)
+	fixture := filepath.Join(binDir, "fixture.webp")
+	if err := os.WriteFile(fixture, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ffmpegLog = filepath.Join(temp, "ffmpeg.log")
+	script := "#!/bin/sh\nout=\"\"\nfor arg in \"$@\"; do out=\"$arg\"; done\n" +
+		"echo S >> \"" + ffmpegLog + "\"\nsleep 0.5\ncp \"" + fixture + "\" \"$out\"\necho E >> \"" + ffmpegLog + "\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "ffmpeg"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	env := config.Env{
+		AppURL:                 "http://localhost",
+		NodeEnv:                "test",
+		DatabaseURL:            os.Getenv("DATABASE_URL"),
+		RedisURL:               os.Getenv("REDIS_URL"),
+		SessionSecret:          strings.Repeat("x", 32),
+		BootstrapSecret:        strings.Repeat("b", 24),
+		TokenEncryptionKey:     strings.Repeat("1", 64),
+		GoogleClientID:         "client",
+		GoogleClientSecret:     "secret",
+		GoogleRedirectURI:      "http://localhost/api/v1/google/callback",
+		StagingPath:            filepath.Join(temp, "stage"),
+		ThumbnailPath:          filepath.Join(temp, "thumb"),
+		MaxImageSizeMB:         50,
+		MaxVideoSizeMB:         200,
+		MinFreeMB:              1,
+		ThumbnailRetentionDays: 30,
+	}
+	ctx := context.Background()
+	database, err := db.Connect(ctx, env)
+	if err != nil {
+		t.Fatalf("db.Connect: %v", err)
+	}
+	t.Cleanup(database.Close)
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("db.Migrate: %v", err)
+	}
+	_, _ = database.Pool.Exec(ctx, `TRUNCATE "UploadAttempt", "Image", "LineGroup", "WebhookEvent", "OutboxEvent", "AuditLog", "GoogleConnection", "Owner" CASCADE`)
+	rOpts, err := redis.ParseURL(env.RedisURL)
+	if err != nil {
+		t.Fatalf("redis.ParseURL: %v", err)
+	}
+	rdb := redis.NewClient(rOpts)
+	t.Cleanup(func() { _ = rdb.Close() })
+	_ = rdb.FlushDB(ctx).Err()
+	store := media.NewStore(env)
+	if err := store.InitDirs(); err != nil {
+		t.Fatal(err)
+	}
+	handler := api.NewServer(env, database, rdb, store).Handler()
+
+	setup := httptest.NewRequest("POST", "/api/v1/auth/setup", strings.NewReader(
+		`{"email":"owner@example.org","password":"long-fixture-password","bootstrap":"`+strings.Repeat("b", 24)+`"}`))
+	setup.Header.Set("Origin", "http://localhost")
+	setup.Header.Set("X-Gallery-Request", "1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, setup)
+	if rec.Code != 200 {
+		t.Fatalf("setup failed (%d): %s", rec.Code, rec.Body.String())
+	}
+	var session string
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "session" {
+			session = c.Value
+		}
+	}
+	if session == "" {
+		t.Fatal("missing session cookie on setup")
+	}
+
+	lineGroupID := "thumb-" + uuid.NewString()
+	if _, err := database.Pool.Exec(ctx, `INSERT INTO "LineGroup" ("id", "lineGroupId", "enabled", "membershipAt", "lastEventAt", "updatedAt") VALUES ($1, $2, true, NOW(), NOW(), NOW())`, uuid.NewString(), lineGroupID); err != nil {
+		t.Fatalf("seed group: %v", err)
+	}
+	seed = func() string {
+		id := uuid.NewString()
+		path, err := store.PathFor(id, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.Pool.Exec(ctx, `INSERT INTO "Image" ("id", "lineGroupId", "channelId", "lineMessageId", "lineEventTimestamp", "uploadStatus", "stagingPath", "updatedAt") VALUES ($1, $2, 'channel', $3, NOW(), 'STAGED'::"UploadState", $4, NOW())`, id, lineGroupID, uuid.NewString(), path); err != nil {
+			t.Fatalf("seed image: %v", err)
+		}
+		return id
+	}
+	get = func(id string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/api/v1/images/"+id+"/thumbnail", nil)
+		req.Header.Set("Cookie", "session="+session)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	return get, seed, ffmpegLog
+}
+
+func TestThumbnailConcurrencyBounded(t *testing.T) {
+	get, seed, ffmpegLog := thumbnailFixture(t)
+
+	fanOut := func(ids []string) {
+		t.Helper()
+		var wg sync.WaitGroup
+		codes := make([]int, len(ids))
+		for i, id := range ids {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				codes[i] = get(id).Code
+			}()
+		}
+		wg.Wait()
+		for i, c := range codes {
+			if c != 200 {
+				t.Fatalf("request %d: expected 200, got %d", i, c)
+			}
+		}
+	}
+
+	distinct := make([]string, 10)
+	for i := range distinct {
+		distinct[i] = seed()
+	}
+	fanOut(distinct)
+	raw, err := os.ReadFile(ffmpegLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Fields(string(raw))
+	running, peak, starts := 0, 0, 0
+	for _, l := range lines {
+		if l == "S" {
+			running++
+			starts++
+			peak = max(peak, running)
+		} else {
+			running--
+		}
+	}
+	if starts != 10 {
+		t.Fatalf("expected 10 ffmpeg runs for 10 ids, got %d", starts)
+	}
+	if peak > 2 {
+		t.Fatalf("expected at most 2 concurrent ffmpeg runs, saw %d", peak)
+	}
+
+	if err := os.Remove(ffmpegLog); err != nil {
+		t.Fatal(err)
+	}
+	one := seed()
+	fanOut([]string{one, one, one, one, one, one, one, one, one, one})
+	raw, err = os.ReadFile(ffmpegLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(raw), "S"); n != 1 {
+		t.Fatalf("expected exactly 1 ffmpeg run for one id, got %d", n)
+	}
+}

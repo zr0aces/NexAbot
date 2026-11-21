@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/sync/singleflight"
 
 	"rivosnap/internal/config"
 	"rivosnap/internal/crypto"
@@ -71,6 +72,35 @@ type Server struct {
 	rateMu        sync.Mutex
 	rateMap       map[string]rateEntry
 	authRates     map[string]rateEntry
+
+	// thumbSem caps concurrent on-demand ffmpeg runs; thumbFlight shares one run per id+size.
+	thumbSem    chan struct{}
+	thumbFlight singleflight.Group
+}
+
+const (
+	maxThumbJobs     = 2
+	thumbWaitTimeout = 20 * time.Second
+)
+
+var errThumbBusy = errors.New("thumbnail generation busy")
+
+// thumbnail generates a missing thumbnail, waiting up to thumbWaitTimeout for one of
+// maxThumbJobs slots. Waiters hold no ffmpeg process.
+func (s *Server) thumbnail(ctx context.Context, id string, size int, kind string) (string, error) {
+	v, err, _ := s.thumbFlight.Do(id+":"+strconv.Itoa(size), func() (any, error) {
+		select {
+		case s.thumbSem <- struct{}{}:
+			defer func() { <-s.thumbSem }()
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(thumbWaitTimeout):
+			return "", errThumbBusy
+		}
+		return s.Store.Thumbnail(ctx, id, size, kind)
+	})
+	path, _ := v.(string)
+	return path, err
 }
 
 func NewServer(env config.Env, database *db.DB, rdb *redis.Client, store *media.Store) *Server {
@@ -81,6 +111,7 @@ func NewServer(env config.Env, database *db.DB, rdb *redis.Client, store *media.
 		Store:     store,
 		rateMap:   make(map[string]rateEntry),
 		authRates: make(map[string]rateEntry),
+		thumbSem:  make(chan struct{}, maxThumbJobs),
 	}
 }
 
@@ -1574,7 +1605,12 @@ func (s *Server) handleMediaStream(w http.ResponseWriter, r *http.Request, thumb
 		if mediaType == "VIDEO" {
 			mediaKind = "VIDEO"
 		}
-		tpath, err := s.Store.Thumbnail(ctx, imgID, size, mediaKind)
+		tpath, err := s.thumbnail(ctx, imgID, size, mediaKind)
+		if errors.Is(err, errThumbBusy) {
+			w.Header().Set("Retry-After", "5")
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Thumbnail generation is busy. Try again shortly."})
+			return
+		}
 		if err != nil {
 			writeErr(w, err)
 			return
