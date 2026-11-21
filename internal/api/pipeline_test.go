@@ -835,7 +835,7 @@ func TestCrashLoopKeepsStagedFileDiscardable(t *testing.T) {
 
 // thumbnailFixture serves the real handler with a stub ffmpeg that logs "S" on start and
 // "E" on end (atomic O_APPEND lines), so overlap is read from log order, not timing.
-func thumbnailFixture(t *testing.T) (get func(id string) *httptest.ResponseRecorder, seed func() string, ffmpegLog string) {
+func thumbnailFixture(t *testing.T) (get func(ctx context.Context, id string) *httptest.ResponseRecorder, seed func() string, ffmpegLog string) {
 	t.Helper()
 	if os.Getenv("GALLERY_INTEGRATION") == "" {
 		t.Skip("skipping integration test; set GALLERY_INTEGRATION=1")
@@ -942,8 +942,8 @@ func thumbnailFixture(t *testing.T) (get func(id string) *httptest.ResponseRecor
 		}
 		return id
 	}
-	get = func(id string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest("GET", "/api/v1/images/"+id+"/thumbnail", nil)
+	get = func(ctx context.Context, id string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/api/v1/images/"+id+"/thumbnail", nil).WithContext(ctx)
 		req.Header.Set("Cookie", "session="+session)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -963,7 +963,7 @@ func TestThumbnailConcurrencyBounded(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				codes[i] = get(id).Code
+				codes[i] = get(context.Background(), id).Code
 			}()
 		}
 		wg.Wait()
@@ -1012,5 +1012,40 @@ func TestThumbnailConcurrencyBounded(t *testing.T) {
 	}
 	if n := strings.Count(string(raw), "S"); n != 1 {
 		t.Fatalf("expected exactly 1 ffmpeg run for one id, got %d", n)
+	}
+}
+
+// A departing leader must neither fail the callers sharing its flight nor block on it.
+func TestThumbnailLeaderCancelDoesNotFailFollower(t *testing.T) {
+	get, seed, ffmpegLog := thumbnailFixture(t)
+	id := seed()
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	defer cancelLeader()
+	order := make(chan string, 2)
+	var leaderRec, followerRec *httptest.ResponseRecorder
+	go func() { leaderRec = get(leaderCtx, id); order <- "leader" }()
+	// The stub logs "S" once the flight is running; the leader owns it.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if raw, _ := os.ReadFile(ffmpegLog); strings.Contains(string(raw), "S") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ffmpeg stub never started")
+		}
+	}
+	go func() { followerRec = get(context.Background(), id); order <- "follower" }()
+	time.Sleep(100 * time.Millisecond) // follower joins the 500 ms flight
+	cancelLeader()
+
+	if first := <-order; first != "leader" {
+		t.Fatalf("expected cancelled leader to return before the flight ended, got %s first", first)
+	}
+	if leaderRec.Body.Len() != 0 {
+		t.Fatalf("cancelled request wrote a body: %q", leaderRec.Body.String())
+	}
+	<-order
+	if followerRec.Code != 200 {
+		t.Fatalf("follower expected 200, got %d: %s", followerRec.Code, followerRec.Body.String())
 	}
 }

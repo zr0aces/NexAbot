@@ -86,21 +86,30 @@ const (
 var errThumbBusy = errors.New("thumbnail generation busy")
 
 // thumbnail generates a missing thumbnail, waiting up to thumbWaitTimeout for one of
-// maxThumbJobs slots. Waiters hold no ffmpeg process.
+// maxThumbJobs slots. Waiters hold no ffmpeg process. The flight runs on a context
+// detached from the caller, so one departing client cannot fail the callers sharing it;
+// an abandoned flight still finishes and fills the cache.
 func (s *Server) thumbnail(ctx context.Context, id string, size int, kind string) (string, error) {
-	v, err, _ := s.thumbFlight.Do(id+":"+strconv.Itoa(size), func() (any, error) {
+	ch := s.thumbFlight.DoChan(id+":"+strconv.Itoa(size), func() (any, error) {
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), thumbWaitTimeout+time.Minute)
+		defer cancel()
 		select {
 		case s.thumbSem <- struct{}{}:
 			defer func() { <-s.thumbSem }()
-		case <-ctx.Done():
-			return "", ctx.Err()
+		case <-fctx.Done():
+			return "", fctx.Err()
 		case <-time.After(thumbWaitTimeout):
 			return "", errThumbBusy
 		}
-		return s.Store.Thumbnail(ctx, id, size, kind)
+		return s.Store.Thumbnail(fctx, id, size, kind)
 	})
-	path, _ := v.(string)
-	return path, err
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case r := <-ch:
+		path, _ := r.Val.(string)
+		return path, r.Err
+	}
 }
 
 func NewServer(env config.Env, database *db.DB, rdb *redis.Client, store *media.Store) *Server {
@@ -1606,6 +1615,9 @@ func (s *Server) handleMediaStream(w http.ResponseWriter, r *http.Request, thumb
 			mediaKind = "VIDEO"
 		}
 		tpath, err := s.thumbnail(ctx, imgID, size, mediaKind)
+		if ctx.Err() != nil {
+			return // client gone; nothing to write
+		}
 		if errors.Is(err, errThumbBusy) {
 			w.Header().Set("Retry-After", "5")
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Thumbnail generation is busy. Try again shortly."})
